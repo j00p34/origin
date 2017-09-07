@@ -9,7 +9,7 @@ parameters:
   displayName: NationalParks Source URI
   name: NATIONALPARKS_GIT_URI
   required: true
-  value: https://github.com/openshift-roadshow/nationalparks.git
+  value: https://github.com/j00p34/nationalparks.git
 - description: NationalParks application source reference
   displayName: NationalParks Source Ref
   name: NATIONALPARKS_GIT_REF
@@ -19,7 +19,7 @@ parameters:
   displayName: MLBParks Source URI
   name: MLBPARKS_GIT_URI
   required: true
-  value: https://github.com/openshift-roadshow/mlbparks.git
+  value: https://github.com/j00p34/mlbparks.git
 - description: MLBParks application source reference
   displayName: MLBParks Source Ref
   name: MLBPARKS_GIT_REF
@@ -29,7 +29,7 @@ parameters:
   displayName: ParksMap Source URI
   name: PARKSMAP_GIT_URI
   required: true
-  value: https://github.com/openshift-roadshow/parksmap-web.git
+  value: https://github.com/j00p34/parksmap-web.git
 - description: ParksMap application source reference
   displayName: ParksMap Source Ref
   name: PARKSMAP_GIT_REF
