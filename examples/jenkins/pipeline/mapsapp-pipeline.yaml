@@ -71,13 +71,6 @@ objects:
                     checkout([$class: "GitSCM", branches: [[name: "*/${nationalParksBranch}"]], doGenerateSubmoduleConfigurations: false, extensions: [[$class: "RelativeTargetDirectory", relativeTargetDir: "nationalparks"]], submoduleCfg: [], userRemoteConfigs: [[url: "${nationalParksURL}"]]])
                     sh "oc new-app -f nationalparks/ose3/pipeline-buildconfig-template.json -p GIT_URI=${nationalParksURL} -p GIT_REF=${nationalParksBranch} -n ${project} --dry-run -o yaml | oc apply -f - -n ${project}"
                   }
-                  
-                  stage('Create NationalParks_dev back-end') {
-                    def nationalParksURL = "${NATIONALPARKS_GIT_URI}"
-                    def nationalParksBranch = "${NATIONALPARKS_GIT_REF}"
-                    checkout([$class: "GitSCM", branches: [[name: "*/${nationalParksBranch}"]], doGenerateSubmoduleConfigurations: false, extensions: [[$class: "RelativeTargetDirectory", relativeTargetDir: "nationalparks"]], submoduleCfg: [], userRemoteConfigs: [[url: "${nationalParksURL}"]]])
-                    sh "oc new-app -f nationalparks/ose3/pipeline-pr-application-template.json -p GIT_URI=${nationalParksURL} -n ${project} --dry-run -o yaml | oc apply -f - -n ${project}"
-                  }
         
                   stage('Create MLBParks back-end') {
                     def mlbParksURL = "${MLBPARKS_GIT_URI}"
