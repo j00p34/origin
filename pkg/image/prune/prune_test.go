@@ -24,10 +24,10 @@ import (
 	"k8s.io/kubernetes/staging/src/k8s.io/apimachinery/pkg/util/diff"
 
 	"github.com/openshift/origin/pkg/api/graph"
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
-	"github.com/openshift/origin/pkg/client/testclient"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
+	imageclient "github.com/openshift/origin/pkg/image/generated/internalclientset/fake"
 	imagegraph "github.com/openshift/origin/pkg/image/graph/nodes"
 )
 
@@ -359,19 +359,48 @@ func (p *fakeImageDeleter) DeleteImage(image *imageapi.Image) error {
 }
 
 type fakeImageStreamDeleter struct {
-	invocations sets.String
-	err         error
+	invocations  sets.String
+	err          error
+	streamImages map[string][]string
 }
 
 var _ ImageStreamDeleter = &fakeImageStreamDeleter{}
 
 func (p *fakeImageStreamDeleter) GetImageStream(stream *imageapi.ImageStream) (*imageapi.ImageStream, error) {
+	if p.streamImages == nil {
+		p.streamImages = make(map[string][]string)
+	}
+	for _, history := range stream.Status.Tags {
+		for _, tagEvent := range history.Items {
+			streamName := fmt.Sprintf("%s/%s", stream.Namespace, stream.Name)
+			p.streamImages[streamName] = append(p.streamImages[streamName], tagEvent.Image)
+		}
+	}
 	return stream, p.err
 }
 
-func (p *fakeImageStreamDeleter) UpdateImageStream(stream *imageapi.ImageStream, image *imageapi.Image, updatedTags []string) (*imageapi.ImageStream, error) {
-	p.invocations.Insert(fmt.Sprintf("%s/%s|%s", stream.Namespace, stream.Name, image.Name))
+func (p *fakeImageStreamDeleter) UpdateImageStream(stream *imageapi.ImageStream) (*imageapi.ImageStream, error) {
+	streamImages := make(map[string]struct{})
+
+	for _, history := range stream.Status.Tags {
+		for _, tagEvent := range history.Items {
+			streamImages[tagEvent.Image] = struct{}{}
+		}
+	}
+
+	streamName := fmt.Sprintf("%s/%s", stream.Namespace, stream.Name)
+
+	for _, imageName := range p.streamImages[streamName] {
+		if _, ok := streamImages[imageName]; !ok {
+			p.invocations.Insert(fmt.Sprintf("%s|%s", streamName, imageName))
+		}
+	}
+
 	return stream, p.err
+}
+
+func (p *fakeImageStreamDeleter) NotifyImageStreamPrune(stream *imageapi.ImageStream, updatedTags []string, deletedTags []string) {
+	return
 }
 
 type fakeBlobDeleter struct {
@@ -914,6 +943,14 @@ func TestImagePruning(t *testing.T) {
 			},
 		},
 
+		"layers shared with young images are not pruned": {
+			images: imageList(
+				agedImage("sha256:0000000000000000000000000000000000000000000000000000000000000001", registryHost+"/foo/bar@sha256:0000000000000000000000000000000000000000000000000000000000000001", 43200),
+				agedImage("sha256:0000000000000000000000000000000000000000000000000000000000000002", registryHost+"/foo/bar@sha256:0000000000000000000000000000000000000000000000000000000000000002", 5),
+			),
+			expectedImageDeletions: []string{"sha256:0000000000000000000000000000000000000000000000000000000000000001"},
+		},
+
 		"image exceeding limits": {
 			pruneOverSizeLimit: newBool(true),
 			images: imageList(
@@ -1041,7 +1078,10 @@ func TestImagePruning(t *testing.T) {
 			options.KeepYoungerThan = &keepYoungerThan
 			options.KeepTagRevisions = &keepTagRevisions
 		}
-		p := NewPruner(options)
+		p, err := NewPruner(options)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		imageDeleter := &fakeImageDeleter{invocations: sets.NewString()}
 		streamDeleter := &fakeImageStreamDeleter{invocations: sets.NewString()}
@@ -1086,11 +1126,11 @@ func TestImageDeleter(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		imageClient := testclient.Fake{}
+		imageClient := imageclient.Clientset{}
 		imageClient.AddReactor("delete", "images", func(action clientgotesting.Action) (handled bool, ret runtime.Object, err error) {
 			return true, nil, test.imageDeletionError
 		})
-		imageDeleter := NewImageDeleter(imageClient.Images())
+		imageDeleter := NewImageDeleter(imageClient.Image())
 		err := imageDeleter.DeleteImage(&imageapi.Image{ObjectMeta: metav1.ObjectMeta{Name: "sha256:0000000000000000000000000000000000000000000000000000000000000002"}})
 		if test.imageDeletionError != nil {
 			if e, a := test.imageDeletionError, err; e != a {
@@ -1275,7 +1315,10 @@ func TestRegistryPruning(t *testing.T) {
 			DCs:              &deployapi.DeploymentConfigList{},
 			RegistryURL:      &url.URL{Scheme: "https", Host: "registry1.io"},
 		}
-		p := NewPruner(options)
+		p, err := NewPruner(options)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		imageDeleter := &fakeImageDeleter{invocations: sets.NewString()}
 		streamDeleter := &fakeImageStreamDeleter{invocations: sets.NewString()}
@@ -1342,7 +1385,10 @@ func TestImageWithStrongAndWeakRefsIsNotPruned(t *testing.T) {
 	keepTagRevisions := 2
 	options.KeepYoungerThan = &keepYoungerThan
 	options.KeepTagRevisions = &keepTagRevisions
-	p := NewPruner(options)
+	p, err := NewPruner(options)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	imageDeleter := &fakeImageDeleter{invocations: sets.NewString()}
 	streamDeleter := &fakeImageStreamDeleter{invocations: sets.NewString()}
@@ -1378,7 +1424,7 @@ func TestImageIsPrunable(t *testing.T) {
 	g.AddEdge(streamNode, imageNode, ReferencedImageEdgeKind)
 	g.AddEdge(streamNode, imageNode, WeakReferencedImageEdgeKind)
 
-	if imageIsPrunable(g, imageNode.(*imagegraph.ImageNode)) {
+	if imageIsPrunable(g, imageNode.(*imagegraph.ImageNode), pruneAlgorithm{}) {
 		t.Fatalf("Image is prunable although it should not")
 	}
 }

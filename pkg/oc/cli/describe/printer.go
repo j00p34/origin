@@ -17,9 +17,9 @@ import (
 	kinternalprinters "k8s.io/kubernetes/pkg/printers/internalversion"
 
 	oapi "github.com/openshift/origin/pkg/api"
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
 	authorizationapi "github.com/openshift/origin/pkg/authorization/apis/authorization"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	networkapi "github.com/openshift/origin/pkg/network/apis/network"
 	oauthapi "github.com/openshift/origin/pkg/oauth/apis/oauth"
@@ -47,7 +47,7 @@ var (
 	roleBindingColumns      = []string{"NAME", "ROLE", "USERS", "GROUPS", "SERVICE ACCOUNTS", "SUBJECTS"}
 	roleColumns             = []string{"NAME"}
 
-	oauthClientColumns              = []string{"NAME", "SECRET", "WWW-CHALLENGE", "REDIRECT URIS"}
+	oauthClientColumns              = []string{"NAME", "SECRET", "WWW-CHALLENGE", "TOKEN-MAX-AGE", "REDIRECT URIS"}
 	oauthClientAuthorizationColumns = []string{"NAME", "USER NAME", "CLIENT NAME", "SCOPES"}
 	oauthAccessTokenColumns         = []string{"NAME", "USER NAME", "CLIENT NAME", "CREATED", "EXPIRES", "REDIRECT URI", "SCOPES"}
 	oauthAuthorizeTokenColumns      = []string{"NAME", "USER NAME", "CLIENT NAME", "CREATED", "EXPIRES", "REDIRECT URI", "SCOPES"}
@@ -60,9 +60,9 @@ var (
 	// IsPersonalSubjectAccessReviewColumns contains known custom role extensions
 	IsPersonalSubjectAccessReviewColumns = []string{"NAME"}
 
-	hostSubnetColumns          = []string{"NAME", "HOST", "HOST IP", "SUBNET"}
-	netNamespaceColumns        = []string{"NAME", "NETID"}
-	clusterNetworkColumns      = []string{"NAME", "NETWORK", "HOST SUBNET LENGTH", "SERVICE NETWORK", "PLUGIN NAME"}
+	hostSubnetColumns          = []string{"NAME", "HOST", "HOST IP", "SUBNET", "EGRESS IPS"}
+	netNamespaceColumns        = []string{"NAME", "NETID", "EGRESS IPS"}
+	clusterNetworkColumns      = []string{"NAME", "CLUSTER NETWORKS", "SERVICE NETWORK", "PLUGIN NAME"}
 	egressNetworkPolicyColumns = []string{"NAME"}
 
 	clusterResourceQuotaColumns = []string{"NAME", "LABEL SELECTOR", "ANNOTATION SELECTOR"}
@@ -501,6 +501,9 @@ func printImageStream(stream *imageapi.ImageStream, w io.Writer, opts kprinters.
 	if len(repo) == 0 {
 		repo = stream.Status.DockerImageRepository
 	}
+	if len(stream.Status.PublicDockerImageRepository) > 0 {
+		repo = stream.Status.PublicDockerImageRepository
+	}
 	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s", name, repo, tags, latestTime); err != nil {
 		return err
 	}
@@ -885,7 +888,19 @@ func printOAuthClient(client *oauthapi.OAuthClient, w io.Writer, opts kprinters.
 	if client.RespondWithChallenges {
 		challenge = "TRUE"
 	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%v", name, client.Secret, challenge, strings.Join(client.RedirectURIs, ",")); err != nil {
+
+	var maxAge string
+	switch {
+	case client.AccessTokenMaxAgeSeconds == nil:
+		maxAge = "default"
+	case *client.AccessTokenMaxAgeSeconds == 0:
+		maxAge = "unexpiring"
+	default:
+		duration := time.Duration(*client.AccessTokenMaxAgeSeconds) * time.Second
+		maxAge = duration.String()
+	}
+
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v", name, client.Secret, challenge, maxAge, strings.Join(client.RedirectURIs, ",")); err != nil {
 		return err
 	}
 	if err := appendItemLabels(client.Labels, w, opts.ColumnLabels, opts.ShowLabels); err != nil {
@@ -921,7 +936,10 @@ func printOAuthClientAuthorizationList(list *oauthapi.OAuthClientAuthorizationLi
 func printOAuthAccessToken(token *oauthapi.OAuthAccessToken, w io.Writer, opts kprinters.PrintOptions) error {
 	name := formatResourceName(opts.Kind, token.Name, opts.WithKind)
 	created := token.CreationTimestamp
-	expires := created.Add(time.Duration(token.ExpiresIn) * time.Second)
+	expires := "never"
+	if token.ExpiresIn > 0 {
+		expires = created.Add(time.Duration(token.ExpiresIn) * time.Second).String()
+	}
 	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, token.UserName, token.ClientName, created, expires, token.RedirectURI, strings.Join(token.Scopes, ","))
 	return err
 }
@@ -954,7 +972,7 @@ func printOAuthAuthorizeTokenList(list *oauthapi.OAuthAuthorizeTokenList, w io.W
 
 func printUser(user *userapi.User, w io.Writer, opts kprinters.PrintOptions) error {
 	name := formatResourceName(opts.Kind, user.Name, opts.WithKind)
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, user.UID, user.FullName, strings.Join(user.Identities, ", ")); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s", name, user.UID, user.FullName, strings.Join(user.Identities, ", ")); err != nil {
 		return err
 	}
 	if err := appendItemLabels(user.Labels, w, opts.ColumnLabels, opts.ShowLabels); err != nil {
@@ -1010,7 +1028,7 @@ func printGroupList(list *userapi.GroupList, w io.Writer, opts kprinters.PrintOp
 
 func printHostSubnet(h *networkapi.HostSubnet, w io.Writer, opts kprinters.PrintOptions) error {
 	name := formatResourceName(opts.Kind, h.Name, opts.WithKind)
-	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, h.Host, h.HostIP, h.Subnet)
+	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t[%s]\n", name, h.Host, h.HostIP, h.Subnet, strings.Join(h.EgressIPs, ", "))
 	return err
 }
 
@@ -1023,9 +1041,9 @@ func printHostSubnetList(list *networkapi.HostSubnetList, w io.Writer, opts kpri
 	return nil
 }
 
-func printNetNamespace(h *networkapi.NetNamespace, w io.Writer, opts kprinters.PrintOptions) error {
-	name := formatResourceName(opts.Kind, h.NetName, opts.WithKind)
-	_, err := fmt.Fprintf(w, "%s\t%d\n", name, h.NetID)
+func printNetNamespace(n *networkapi.NetNamespace, w io.Writer, opts kprinters.PrintOptions) error {
+	name := formatResourceName(opts.Kind, n.NetName, opts.WithKind)
+	_, err := fmt.Fprintf(w, "%s\t%d\t[%s]\n", name, n.NetID, strings.Join(n.EgressIPs, ", "))
 	return err
 }
 
@@ -1040,7 +1058,24 @@ func printNetNamespaceList(list *networkapi.NetNamespaceList, w io.Writer, opts 
 
 func printClusterNetwork(n *networkapi.ClusterNetwork, w io.Writer, opts kprinters.PrintOptions) error {
 	name := formatResourceName(opts.Kind, n.Name, opts.WithKind)
-	_, err := fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", name, n.Network, n.HostSubnetLength, n.ServiceNetwork, n.PluginName)
+	const numOfNetworksShown = 3
+	var networksList []string
+	var networks string
+	for _, cidr := range n.ClusterNetworks {
+		networksList = append(networksList, fmt.Sprintf("%s:%d", cidr.CIDR, cidr.HostSubnetLength))
+	}
+
+	if _, err := fmt.Fprintf(w, "%s", name); err != nil {
+		return err
+	}
+	if len(networksList) > numOfNetworksShown {
+		networks = fmt.Sprintf("%s + %d more...",
+			strings.Join(networksList[:numOfNetworksShown], ", "),
+			len(networksList)-numOfNetworksShown)
+	} else {
+		networks = strings.Join(networksList, ", ")
+	}
+	_, err := fmt.Fprintf(w, "\t%s\t%s\t%s\n", networks, n.ServiceNetwork, n.PluginName)
 	return err
 }
 

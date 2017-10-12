@@ -40,7 +40,7 @@ import (
 // newHandlerForTest returns a configured handler for testing.
 func newHandlerForTest(internalClient internalclientset.Interface) (admission.Interface, informers.SharedInformerFactory, error) {
 	f := informers.NewSharedInformerFactory(internalClient, 5*time.Minute)
-	handler, err := NewDefaultServicePlan()
+	handler, err := NewDefaultClusterServicePlan()
 	if err != nil {
 		return nil, f, err
 	}
@@ -51,41 +51,92 @@ func newHandlerForTest(internalClient internalclientset.Interface) (admission.In
 }
 
 // newFakeServiceCatalogClientForTest creates a fake clientset that returns a
-// ServiceClassList with the given ServiceClass as the single list item.
-func newFakeServiceCatalogClientForTest(sc *servicecatalog.ServiceClass) *fake.Clientset {
+// ClusterServiceClassList with the given ClusterServiceClass as the single list item.
+func newFakeServiceCatalogClientForTest(sc *servicecatalog.ClusterServiceClass, sps []*servicecatalog.ClusterServicePlan) *fake.Clientset {
 	fakeClient := &fake.Clientset{}
 
-	scList := &servicecatalog.ServiceClassList{
+	// react to the given service classes
+	scList := &servicecatalog.ClusterServiceClassList{
 		ListMeta: metav1.ListMeta{
 			ResourceVersion: "1",
 		}}
-	scList.Items = append(scList.Items, *sc)
+	if sc != nil {
+		scList.Items = append(scList.Items, *sc)
+	}
 
-	fakeClient.AddReactor("list", "serviceclasses", func(action core.Action) (bool, runtime.Object, error) {
+	fakeClient.AddReactor("list", "clusterserviceclasses", func(action core.Action) (bool, runtime.Object, error) {
 		return true, scList, nil
 	})
+
+	// react to the given plans
+	spList := &servicecatalog.ClusterServicePlanList{
+		ListMeta: metav1.ListMeta{
+			ResourceVersion: "1",
+		}}
+	for _, sp := range sps {
+		spList.Items = append(spList.Items, *sp)
+	}
+	fakeClient.AddReactor("list", "clusterserviceplans", func(action core.Action) (bool, runtime.Object, error) {
+		return true, spList, nil
+	})
+
 	return fakeClient
 }
 
-// newInstance returns a new instance for the specified namespace.
-func newInstance(namespace string) servicecatalog.Instance {
-	return servicecatalog.Instance{
+// newServiceInstance returns a new instance for the specified namespace.
+func newServiceInstance(namespace string) servicecatalog.ServiceInstance {
+	return servicecatalog.ServiceInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: namespace},
 	}
 }
 
-// newServiceClass returns a new instance with the specified plans.
-func newServiceClass(name string, plans ...string) *servicecatalog.ServiceClass {
-	sc := &servicecatalog.ServiceClass{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	for _, plan := range plans {
-		sc.Plans = append(sc.Plans, servicecatalog.ServicePlan{Name: plan})
+// newClusterServiceClass returns a new serviceclass.
+func newClusterServiceClass(id string, name string) *servicecatalog.ClusterServiceClass {
+	sc := &servicecatalog.ClusterServiceClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: id,
+		},
+		Spec: servicecatalog.ClusterServiceClassSpec{
+			ExternalID:   id,
+			ExternalName: name,
+		},
 	}
 	return sc
 }
 
+// newClusterServiceClass returns a new serviceclass.
+func newClusterServicePlans(count uint) []*servicecatalog.ClusterServicePlan {
+	sp1 := &servicecatalog.ClusterServicePlan{
+		ObjectMeta: metav1.ObjectMeta{Name: "bar-id"},
+		Spec: servicecatalog.ClusterServicePlanSpec{
+			ExternalName: "bar",
+			ExternalID:   "12345",
+		},
+	}
+
+	sp2 := &servicecatalog.ClusterServicePlan{
+		ObjectMeta: metav1.ObjectMeta{Name: "baz-id"},
+		Spec: servicecatalog.ClusterServicePlanSpec{
+			ExternalName: "baz",
+			ExternalID:   "23456",
+		},
+	}
+
+	if 0 == count {
+		return []*servicecatalog.ClusterServicePlan{}
+	}
+	if 1 == count {
+		return []*servicecatalog.ClusterServicePlan{sp1}
+	}
+	if 2 == count {
+		return []*servicecatalog.ClusterServicePlan{sp1, sp2}
+	}
+	return []*servicecatalog.ClusterServicePlan{}
+}
+
 func TestWithListFailure(t *testing.T) {
 	fakeClient := &fake.Clientset{}
-	fakeClient.AddReactor("list", "serviceclasses", func(action core.Action) (bool, runtime.Object, error) {
+	fakeClient.AddReactor("list", "clusterserviceclasses", func(action core.Action) (bool, runtime.Object, error) {
 		return true, nil, fmt.Errorf("simulated test failure")
 	})
 	handler, informerFactory, err := newHandlerForTest(fakeClient)
@@ -94,30 +145,30 @@ func TestWithListFailure(t *testing.T) {
 	}
 	informerFactory.Start(wait.NeverStop)
 
-	instance := newInstance("dummy")
-	instance.Spec.ServiceClassName = "foo"
+	instance := newServiceInstance("dummy")
+	instance.Spec.ExternalClusterServiceClassName = "foo"
 
-	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("Instance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("instances").WithVersion("version"), "", admission.Create, nil))
+	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("ServiceInstance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("serviceinstances").WithVersion("version"), "", admission.Create, nil))
 	if err == nil {
-		t.Errorf("unexpected success with no ServiceClasses.List succeeding")
-	} else if !strings.Contains(err.Error(), "not yet ready to handle request") {
+		t.Errorf("unexpected success with no ClusterServiceClasses.List succeeding")
+	} else if !strings.Contains(err.Error(), "simulated test failure") {
 		t.Errorf("did not find expected error, got %q", err)
 	}
 }
 
 func TestWithPlanWorks(t *testing.T) {
-	fakeClient := newFakeServiceCatalogClientForTest(&servicecatalog.ServiceClass{})
+	fakeClient := newFakeServiceCatalogClientForTest(nil, newClusterServicePlans(1))
 	handler, informerFactory, err := newHandlerForTest(fakeClient)
 	if err != nil {
 		t.Errorf("unexpected error initializing handler: %v", err)
 	}
 	informerFactory.Start(wait.NeverStop)
 
-	instance := newInstance("dummy")
-	instance.Spec.ServiceClassName = "foo"
-	instance.Spec.PlanName = "bar"
+	instance := newServiceInstance("dummy")
+	instance.Spec.ExternalClusterServiceClassName = "foo"
+	instance.Spec.ExternalClusterServicePlanName = "bar"
 
-	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("Instance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("instances").WithVersion("version"), "", admission.Create, nil))
+	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("ServiceInstance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("serviceinstances").WithVersion("version"), "", admission.Create, nil))
 	if err != nil {
 		actions := ""
 		for _, action := range fakeClient.Actions() {
@@ -127,18 +178,18 @@ func TestWithPlanWorks(t *testing.T) {
 	}
 }
 
-func TestWithNoPlanFailsWithNoServiceClass(t *testing.T) {
-	fakeClient := newFakeServiceCatalogClientForTest(&servicecatalog.ServiceClass{})
+func TestWithNoPlanFailsWithNoClusterServiceClass(t *testing.T) {
+	fakeClient := newFakeServiceCatalogClientForTest(nil, newClusterServicePlans(1))
 	handler, informerFactory, err := newHandlerForTest(fakeClient)
 	if err != nil {
 		t.Errorf("unexpected error initializing handler: %v", err)
 	}
 	informerFactory.Start(wait.NeverStop)
 
-	instance := newInstance("dummy")
-	instance.Spec.ServiceClassName = "foo"
+	instance := newServiceInstance("dummy")
+	instance.Spec.ExternalClusterServiceClassName = "foobar"
 
-	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("Instance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("instances").WithVersion("version"), "", admission.Create, nil))
+	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("ServiceInstance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("serviceinstances").WithVersion("version"), "", admission.Create, nil))
 	if err == nil {
 		t.Errorf("unexpected success with no plan specified and no serviceclass existing")
 	} else if !strings.Contains(err.Error(), "does not exist, can not figure") {
@@ -146,20 +197,23 @@ func TestWithNoPlanFailsWithNoServiceClass(t *testing.T) {
 	}
 }
 
+// checks that the defaulting action works when a service class only provides a single plan.
 func TestWithNoPlanWorksWithSinglePlan(t *testing.T) {
-	sc := newServiceClass("foo", "bar")
+	sc := newClusterServiceClass("foo-id", "foo")
+	sps := newClusterServicePlans(1)
 	glog.V(4).Infof("Created Service as %+v", sc)
-	fakeClient := newFakeServiceCatalogClientForTest(sc)
+	fakeClient := newFakeServiceCatalogClientForTest(sc, sps)
+
 	handler, informerFactory, err := newHandlerForTest(fakeClient)
 	if err != nil {
 		t.Errorf("unexpected error initializing handler: %v", err)
 	}
 	informerFactory.Start(wait.NeverStop)
 
-	instance := newInstance("dummy")
-	instance.Spec.ServiceClassName = "foo"
+	instance := newServiceInstance("dummy")
+	instance.Spec.ExternalClusterServiceClassName = "foo"
 
-	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("Instance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("instances").WithVersion("version"), "", admission.Create, nil))
+	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("ServiceInstance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("serviceinstances").WithVersion("version"), "", admission.Create, nil))
 	if err != nil {
 		actions := ""
 		for _, action := range fakeClient.Actions() {
@@ -167,26 +221,28 @@ func TestWithNoPlanWorksWithSinglePlan(t *testing.T) {
 		}
 		t.Errorf("unexpected error %q returned from admission handler: %v", err, actions)
 	}
-	// Make sure the Instance has been mutated to include the service plan name
-	if instance.Spec.PlanName != "bar" {
+	// Make sure the ServiceInstance has been mutated to include the service plan name
+	if instance.Spec.ExternalClusterServicePlanName != "bar" {
 		t.Errorf("PlanName was not modified for the default plan")
 	}
 }
 
+// checks that defaulting fails when there are multiple plans to choose from.
 func TestWithNoPlanFailsWithMultiplePlans(t *testing.T) {
-	sc := newServiceClass("foo", "bar", "baz")
+	sc := newClusterServiceClass("foo-id", "foo")
+	sps := newClusterServicePlans(2)
 	glog.V(4).Infof("Created Service as %+v", sc)
-	fakeClient := newFakeServiceCatalogClientForTest(sc)
+	fakeClient := newFakeServiceCatalogClientForTest(sc, sps)
 	handler, informerFactory, err := newHandlerForTest(fakeClient)
 	if err != nil {
 		t.Errorf("unexpected error initializing handler: %v", err)
 	}
 	informerFactory.Start(wait.NeverStop)
 
-	instance := newInstance("dummy")
-	instance.Spec.ServiceClassName = "foo"
+	instance := newServiceInstance("dummy")
+	instance.Spec.ExternalClusterServiceClassName = "foo"
 
-	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("Instance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("instances").WithVersion("version"), "", admission.Create, nil))
+	err = handler.Admit(admission.NewAttributesRecord(&instance, nil, servicecatalog.Kind("ServiceInstance").WithVersion("version"), instance.Namespace, instance.Name, servicecatalog.Resource("serviceinstances").WithVersion("version"), "", admission.Create, nil))
 	if err == nil {
 		t.Errorf("unexpected success with no plan specified and no serviceclass existing")
 		return

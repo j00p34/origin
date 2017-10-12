@@ -1,3 +1,5 @@
+// +build linux
+
 package node
 
 import (
@@ -31,9 +33,13 @@ func (mp *multiTenantPlugin) Name() string {
 	return network.MultiTenantPluginName
 }
 
+func (mp *multiTenantPlugin) SupportsVNIDs() bool {
+	return true
+}
+
 func (mp *multiTenantPlugin) Start(node *OsdnNode) error {
 	mp.node = node
-	mp.vnids = newNodeVNIDMap(mp, node.osClient)
+	mp.vnids = newNodeVNIDMap(mp, node.networkClient)
 	if err := mp.vnids.Start(); err != nil {
 		return err
 	}
@@ -42,10 +48,6 @@ func (mp *multiTenantPlugin) Start(node *OsdnNode) error {
 	otx.AddFlow("table=80, priority=200, reg0=0, actions=output:NXM_NX_REG2[]")
 	otx.AddFlow("table=80, priority=200, reg1=0, actions=output:NXM_NX_REG2[]")
 	if err := otx.EndTransaction(); err != nil {
-		return err
-	}
-
-	if err := mp.node.SetupEgressNetworkPolicy(); err != nil {
 		return err
 	}
 

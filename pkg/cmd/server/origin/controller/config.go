@@ -44,12 +44,12 @@ type OpenshiftControllerConfig struct {
 
 	BuildControllerConfig BuildControllerConfig
 
-	DeployerControllerConfig          DeployerControllerConfig
-	DeploymentConfigControllerConfig  DeploymentConfigControllerConfig
-	DeploymentTriggerControllerConfig DeploymentTriggerControllerConfig
+	DeployerControllerConfig         DeployerControllerConfig
+	DeploymentConfigControllerConfig DeploymentConfigControllerConfig
 
-	ImageTriggerControllerConfig ImageTriggerControllerConfig
-	ImageImportControllerConfig  ImageImportControllerConfig
+	ImageTriggerControllerConfig         ImageTriggerControllerConfig
+	ImageSignatureImportControllerConfig ImageSignatureImportControllerConfig
+	ImageImportControllerConfig          ImageImportControllerConfig
 
 	ServiceServingCertsControllerOptions ServiceServingCertsControllerOptions
 
@@ -76,10 +76,10 @@ func (c *OpenshiftControllerConfig) GetControllerInitializers() (map[string]Init
 
 	ret["openshift.io/deployer"] = c.DeployerControllerConfig.RunController
 	ret["openshift.io/deploymentconfig"] = c.DeploymentConfigControllerConfig.RunController
-	ret["openshift.io/deploymenttrigger"] = c.DeploymentTriggerControllerConfig.RunController
 
 	ret["openshift.io/image-trigger"] = c.ImageTriggerControllerConfig.RunController
 	ret["openshift.io/image-import"] = c.ImageImportControllerConfig.RunController
+	ret["openshift.io/image-signature-import"] = c.ImageSignatureImportControllerConfig.RunController
 
 	ret["openshift.io/templateinstance"] = RunTemplateInstanceController
 
@@ -185,9 +185,6 @@ func BuildOpenshiftControllerConfig(options configapi.MasterConfig) (*OpenshiftC
 	ret.DeploymentConfigControllerConfig = DeploymentConfigControllerConfig{
 		Codec: annotationCodec,
 	}
-	ret.DeploymentTriggerControllerConfig = DeploymentTriggerControllerConfig{
-		Codec: annotationCodec,
-	}
 
 	ret.ImageTriggerControllerConfig = ImageTriggerControllerConfig{
 		HasBuilderEnabled: options.DisabledFeatures.Has(configapi.FeatureBuilder),
@@ -202,6 +199,11 @@ func BuildOpenshiftControllerConfig(options configapi.MasterConfig) (*OpenshiftC
 		ResyncPeriod:                               10 * time.Minute,
 		DisableScheduledImport:                     options.ImagePolicyConfig.DisableScheduledImport,
 		ScheduledImageImportMinimumIntervalSeconds: options.ImagePolicyConfig.ScheduledImageImportMinimumIntervalSeconds,
+	}
+	ret.ImageSignatureImportControllerConfig = ImageSignatureImportControllerConfig{
+		ResyncPeriod:          10 * time.Minute,
+		SignatureFetchTimeout: 1 * time.Minute,
+		SignatureImportLimit:  3,
 	}
 
 	ret.ServiceServingCertsControllerOptions = ServiceServingCertsControllerOptions{

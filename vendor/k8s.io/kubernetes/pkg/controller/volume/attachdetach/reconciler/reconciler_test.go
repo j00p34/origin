@@ -170,8 +170,8 @@ func Test_Run_Positive_OneDesiredVolumeAttachThenDetachWithUnmountedVolume(t *te
 			generatedVolumeName,
 			nodeName)
 	}
-	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, true /* mounted */, false)
-	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, false /* mounted */, false)
+	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, true /* mounted */)
+	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, false /* mounted */)
 
 	// Assert
 	waitForNewDetacherCallCount(t, 1 /* expectedCallCount */, fakePlugin)
@@ -304,8 +304,8 @@ func Test_Run_Negative_OneDesiredVolumeAttachThenDetachWithUnmountedVolumeUpdate
 			generatedVolumeName,
 			nodeName)
 	}
-	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, true /* mounted */, false)
-	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, false /* mounted */, false)
+	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, true /* mounted */)
+	asw.SetVolumeMountedByNode(generatedVolumeName, nodeName, false /* mounted */)
 
 	// Assert
 	verifyNewDetacherCallCount(t, true /* expectZeroNewDetacherCallCount */, fakePlugin)
@@ -461,6 +461,17 @@ func Test_Run_OneVolumeAttachAndDetachMultipleNodesWithReadWriteOnce(t *testing.
 		t.Fatal("Volume was not attached to any node")
 	} else if len(nodesForVolume) != 1 {
 		t.Fatal("Volume was attached to multiple nodes")
+	}
+
+	// check if multiattach is marked
+	// at least one volume should be marked with multiattach error
+	nodeAttachedTo := nodesForVolume[0]
+	for _, volumeToAttach := range dsw.GetVolumesToAttach() {
+		if volumeToAttach.NodeName != nodeAttachedTo {
+			if !volumeToAttach.MultiAttachErrorReported {
+				t.Fatalf("Expected volume %q on node %q to have multiattach error", volumeToAttach.VolumeName, volumeToAttach.NodeName)
+			}
+		}
 	}
 
 	// Act

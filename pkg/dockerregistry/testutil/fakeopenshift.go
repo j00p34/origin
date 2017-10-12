@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgotesting "k8s.io/client-go/testing"
 
-	"github.com/openshift/origin/pkg/client/testclient"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	imageapiv1 "github.com/openshift/origin/pkg/image/apis/image/v1"
 	imagefakeclient "github.com/openshift/origin/pkg/image/generated/clientset/typed/image/v1/fake"
@@ -39,13 +38,13 @@ func NewFakeOpenShift() *FakeOpenShift {
 // NewFakeOpenShiftWithClient constructs a fake client associated with
 // the stateful fake in-memory OpenShift reactors. The fake OpenShift is
 // available for direct interaction, so you can make buggy states.
-func NewFakeOpenShiftWithClient() (*FakeOpenShift, *testclient.Fake, *imagefakeclient.FakeImageV1) {
+// TODO: remove the FakeOpenshift as the legacy client is not needed anymore
+func NewFakeOpenShiftWithClient() (*FakeOpenShift, *imagefakeclient.FakeImageV1) {
 	fos := NewFakeOpenShift()
-	client := &testclient.Fake{}
 
 	imageClient := &imagefakeclient.FakeImageV1{Fake: &clientgotesting.Fake{}}
 	fos.AddReactorsTo(imageClient)
-	return fos, client, imageClient
+	return fos, imageClient
 }
 
 func (fos *FakeOpenShift) CreateImage(image *imageapiv1.Image) (*imageapiv1.Image, error) {
@@ -288,7 +287,7 @@ func (fos *FakeOpenShift) GetImageStreamImage(namespace string, id string) (*ima
 	isi := imageapiv1.ImageStreamImage{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:         namespace,
-			Name:              imageapi.MakeImageStreamImageName(name, imageID),
+			Name:              imageapi.JoinImageStreamImage(name, imageID),
 			CreationTimestamp: image.ObjectMeta.CreationTimestamp,
 			Annotations:       repo.Annotations,
 		},
@@ -380,11 +379,11 @@ func (fos *FakeOpenShift) imageStreamMappingsHandler(action clientgotesting.Acti
 		func() (bool, runtime.Object, error) {
 			switch action := action.(type) {
 			case clientgotesting.CreateActionImpl:
-				ism, err := fos.CreateImageStreamMapping(
+				_, err := fos.CreateImageStreamMapping(
 					action.GetNamespace(),
 					action.Object.(*imageapiv1.ImageStreamMapping),
 				)
-				return true, ism, err
+				return true, &metav1.Status{}, err
 			}
 			return fos.todo(action)
 		},

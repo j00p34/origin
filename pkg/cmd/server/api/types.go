@@ -159,6 +159,8 @@ var (
 
 type ExtendedArguments map[string][]string
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // NodeConfig is the fully specified config starting an OpenShift node
 type NodeConfig struct {
 	metav1.TypeMeta
@@ -323,6 +325,8 @@ const (
 
 type FeatureList []string
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type MasterConfig struct {
 	metav1.TypeMeta
 
@@ -461,10 +465,29 @@ type AggregatorConfig struct {
 	ProxyClientInfo CertInfo
 }
 
+type LogFormatType string
+
+type WebHookModeType string
+
+const (
+	// LogFormatLegacy saves event in 1-line text format.
+	LogFormatLegacy LogFormatType = "legacy"
+	// LogFormatJson saves event in structured json format.
+	LogFormatJson LogFormatType = "json"
+
+	// WebHookModeBatch indicates that the webhook should buffer audit events
+	// internally, sending batch updates either once a certain number of
+	// events have been received or a certain amount of time has passed.
+	WebHookModeBatch WebHookModeType = "batch"
+	// WebHookModeBlocking causes the webhook to block on every attempt to process
+	// a set of events. This causes requests to the API server to wait for a
+	// round trip to the external audit service before sending a response.
+	WebHookModeBlocking WebHookModeType = "blocking"
+)
+
 // AuditConfig holds configuration for the audit capabilities
 type AuditConfig struct {
 	// If this flag is set, audit log will be printed in the logs.
-	// The logs contains, method, user and a requested URL.
 	Enabled bool
 	// All requests coming to the apiserver will be logged to this file.
 	AuditFilePath string
@@ -474,6 +497,21 @@ type AuditConfig struct {
 	MaximumRetainedFiles int
 	// Maximum size in megabytes of the log file before it gets rotated. Defaults to 100MB.
 	MaximumFileSizeMegabytes int
+
+	// PolicyFile is a path to the file that defines the audit policy configuration.
+	PolicyFile string
+	// PolicyConfiguration is an embedded policy configuration object to be used
+	// as the audit policy configuration. If present, it will be used instead of
+	// the path to the policy file.
+	PolicyConfiguration runtime.Object
+
+	// Format of saved audits (legacy or json).
+	LogFormat LogFormatType
+
+	// Path to a .kubeconfig formatted file that defines the audit webhook configuration.
+	WebHookKubeConfig string
+	// Strategy for sending audit events (block or batch).
+	WebHookMode WebHookModeType
 }
 
 // JenkinsPipelineConfig holds configuration for the Jenkins pipeline strategy
@@ -629,10 +667,12 @@ type UserAgentDenyRule struct {
 
 // MasterNetworkConfig to be passed to the compiled in network plugin
 type MasterNetworkConfig struct {
-	NetworkPluginName  string
-	ClusterNetworkCIDR string
-	HostSubnetLength   uint32
-	ServiceNetworkCIDR string
+	NetworkPluginName            string
+	DeprecatedClusterNetworkCIDR string
+	// ClusterNetworks contains a list of cluster networks that defines the global overlay networks L3 space.
+	ClusterNetworks            []ClusterNetworkEntry
+	DeprecatedHostSubnetLength uint32
+	ServiceNetworkCIDR         string
 	// ExternalIPNetworkCIDRs controls what values are acceptable for the service external IP field. If empty, no externalIP
 	// may be set. It may contain a list of CIDRs which are checked for access. If a CIDR is prefixed with !, IPs in that
 	// CIDR will be rejected. Rejections will be applied first, then the IP checked against one of the allowed CIDRs. You
@@ -643,6 +683,15 @@ type MasterNetworkConfig struct {
 	// For security reasons, you should ensure that this range does not overlap with the CIDRs reserved for external ips,
 	// nodes, pods, or services.
 	IngressIPNetworkCIDR string
+}
+
+// ClusterNetworkEntry defines an individual cluster network. The CIDRs cannot overlap with other cluster network CIDRs, CIDRs
+// reserved for external ips, CIDRs reserved for service networks, and CIDRs reserved for ingress ips.
+type ClusterNetworkEntry struct {
+	// CIDR defines the total range of a cluster networks address space.
+	CIDR string
+	// HostSubnetLength gives the number of address bits reserved for pod IPs on each node.
+	HostSubnetLength uint32
 }
 
 type ImageConfig struct {
@@ -903,6 +952,8 @@ type SessionConfig struct {
 	SessionName string
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // SessionSecrets list the secrets to use to sign/encrypt and authenticate/decrypt created sessions.
 type SessionSecrets struct {
 	metav1.TypeMeta
@@ -933,6 +984,8 @@ type IdentityProvider struct {
 	Provider runtime.Object
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type BasicAuthPasswordIdentityProvider struct {
 	metav1.TypeMeta
 
@@ -940,13 +993,19 @@ type BasicAuthPasswordIdentityProvider struct {
 	RemoteConnectionInfo RemoteConnectionInfo
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type AllowAllPasswordIdentityProvider struct {
 	metav1.TypeMeta
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type DenyAllPasswordIdentityProvider struct {
 	metav1.TypeMeta
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type HTPasswdPasswordIdentityProvider struct {
 	metav1.TypeMeta
@@ -954,6 +1013,8 @@ type HTPasswdPasswordIdentityProvider struct {
 	// File is a reference to your htpasswd file
 	File string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type LDAPPasswordIdentityProvider struct {
 	metav1.TypeMeta
@@ -992,6 +1053,8 @@ type LDAPAttributeMapping struct {
 	Email []string
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type KeystonePasswordIdentityProvider struct {
 	metav1.TypeMeta
 	// RemoteConnectionInfo contains information about how to connect to the keystone server
@@ -999,6 +1062,8 @@ type KeystonePasswordIdentityProvider struct {
 	// Domain Name is required for keystone v3
 	DomainName string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type RequestHeaderIdentityProvider struct {
 	metav1.TypeMeta
@@ -1034,6 +1099,8 @@ type RequestHeaderIdentityProvider struct {
 	EmailHeaders []string
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type GitHubIdentityProvider struct {
 	metav1.TypeMeta
 
@@ -1046,6 +1113,8 @@ type GitHubIdentityProvider struct {
 	// Teams optionally restricts which teams are allowed to log in. Format is <org>/<team>.
 	Teams []string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type GitLabIdentityProvider struct {
 	metav1.TypeMeta
@@ -1061,6 +1130,8 @@ type GitLabIdentityProvider struct {
 	ClientSecret StringSource
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type GoogleIdentityProvider struct {
 	metav1.TypeMeta
 
@@ -1072,6 +1143,8 @@ type GoogleIdentityProvider struct {
 	// HostedDomain is the optional Google App domain (e.g. "mycompany.com") to restrict logins to
 	HostedDomain string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type OpenIDIdentityProvider struct {
 	metav1.TypeMeta
@@ -1267,6 +1340,8 @@ type StringSourceSpec struct {
 	// KeyFile references a file containing the key to use to decrypt the value.
 	KeyFile string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type LDAPSyncConfig struct {
 	metav1.TypeMeta
@@ -1473,6 +1548,8 @@ type ServiceServingCert struct {
 	// If this value is nil, then certs are not signed automatically.
 	Signer *CertInfo
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // DefaultAdmissionConfig can be used to enable or disable various admission plugins.
 // When this type is present as the `configuration` object under `pluginConfig` and *if* the admission plugin supports it,

@@ -46,13 +46,13 @@ tag_prefix="${OS_IMAGE_PREFIX:-"openshift/origin"}"
 ( os::build::image "${tag_prefix}-pod"                   images/pod ) &
 ( os::build::image "${tag_prefix}-cluster-capacity"      images/cluster-capacity ) &
 ( os::build::image "${tag_prefix}-service-catalog"       images/service-catalog ) &
+( os::build::image "${tag_prefix}-template-service-broker"  images/template-service-broker ) &
+
 
 for i in `jobs -p`; do wait $i; done
 
 # images that depend on "${tag_prefix}-base"
 ( os::build::image "${tag_prefix}"                       images/origin ) &
-( os::build::image "${tag_prefix}-haproxy-router"        images/router/haproxy ) &
-( os::build::image "${tag_prefix}-keepalived-ipfailover" images/ipfailover/keepalived ) &
 ( os::build::image "${tag_prefix}-docker-registry"       images/dockerregistry ) &
 ( os::build::image "${tag_prefix}-egress-router"         images/egress/router ) &
 ( os::build::image "${tag_prefix}-egress-http-proxy"     images/egress/http-proxy ) &
@@ -61,6 +61,8 @@ for i in `jobs -p`; do wait $i; done
 for i in `jobs -p`; do wait $i; done
 
 # images that depend on "${tag_prefix}
+( os::build::image "${tag_prefix}-haproxy-router"        images/router/haproxy ) &
+( os::build::image "${tag_prefix}-keepalived-ipfailover" images/ipfailover/keepalived ) &
 ( os::build::image "${tag_prefix}-gitserver"             examples/gitserver ) &
 ( os::build::image "${tag_prefix}-deployer"              images/deployer ) &
 ( os::build::image "${tag_prefix}-recycler"              images/recycler ) &

@@ -90,6 +90,11 @@ var map_AuditConfig = map[string]string{
 	"maximumFileRetentionDays": "Maximum number of days to retain old log files based on the timestamp encoded in their filename.",
 	"maximumRetainedFiles":     "Maximum number of old log files to retain.",
 	"maximumFileSizeMegabytes": "Maximum size in megabytes of the log file before it gets rotated. Defaults to 100MB.",
+	"policyFile":               "PolicyFile is a path to the file that defines the audit policy configuration.",
+	"policyConfiguration":      "PolicyConfiguration is an embedded policy configuration object to be used as the audit policy configuration. If present, it will be used instead of the path to the policy file.",
+	"logFormat":                "Format of saved audits (legacy or json).",
+	"webHookKubeConfig":        "Path to a .kubeconfig formatted file that defines the audit webhook configuration.",
+	"webHookMode":              "Strategy for sending audit events (block or batch).",
 }
 
 func (AuditConfig) SwaggerDoc() map[string]string {
@@ -138,6 +143,16 @@ var map_ClientConnectionOverrides = map[string]string{
 
 func (ClientConnectionOverrides) SwaggerDoc() map[string]string {
 	return map_ClientConnectionOverrides
+}
+
+var map_ClusterNetworkEntry = map[string]string{
+	"":                 "ClusterNetworkEntry defines an individual cluster network. The CIDRs cannot overlap with other cluster network CIDRs, CIDRs reserved for external ips, CIDRs reserved for service networks, and CIDRs reserved for ingress ips.",
+	"cidr":             "CIDR defines the total range of a cluster networks address space.",
+	"hostSubnetLength": "HostSubnetLength is the number of bits of the accompanying CIDR address to allocate to each node. eg, 8 would mean that each node would have a /24 slice of the overlay network for its pod.",
+}
+
+func (ClusterNetworkEntry) SwaggerDoc() map[string]string {
+	return map_ClusterNetworkEntry
 }
 
 var map_ControllerConfig = map[string]string{
@@ -502,7 +517,7 @@ var map_MasterConfig = map[string]string{
 	"controllerLeaseTTL":     "ControllerLeaseTTL enables controller election against etcd, instructing the master to attempt to acquire a lease before controllers start and renewing it within a number of seconds defined by this value. Setting this value non-negative forces pauseControllers=true. This value defaults off (0, or omitted) and controller election can be disabled with -1. This field is ignored if controllerConfig.lockServiceName is specified. Deprecated: use controllerConfig.lockServiceName to force leader election via config, and the\n  appropriate leader election flags in controllerArguments. Will be removed in 3.9.",
 	"admissionConfig":        "AdmissionConfig contains admission control plugin configuration.",
 	"controllerConfig":       "ControllerConfig holds configuration values for controllers",
-	"disabledFeatures":       "DisabledFeatures is a list of features that should not be started.  We omitempty here because its very unlikely that anyone will want to manually disable features and we don't want to encourage it.",
+	"disabledFeatures":       "DisabledFeatures is a list of features that should not be started.",
 	"etcdStorageConfig":      "EtcdStorageConfig contains information about how API resources are stored in Etcd. These values are only relevant when etcd is the backing store for the cluster.",
 	"etcdClientInfo":         "EtcdClientInfo contains information about how to connect to etcd",
 	"kubeletClientInfo":      "KubeletClientInfo contains information about how to connect to kubelets",
@@ -531,8 +546,9 @@ func (MasterConfig) SwaggerDoc() map[string]string {
 var map_MasterNetworkConfig = map[string]string{
 	"":                       "MasterNetworkConfig to be passed to the compiled in network plugin",
 	"networkPluginName":      "NetworkPluginName is the name of the network plugin to use",
-	"clusterNetworkCIDR":     "ClusterNetworkCIDR is the CIDR string to specify the global overlay network's L3 space",
-	"hostSubnetLength":       "HostSubnetLength is the number of bits to allocate to each host's subnet e.g. 8 would mean a /24 network on the host",
+	"clusterNetworkCIDR":     "ClusterNetworkCIDR is the CIDR string to specify the global overlay network's L3 space.  Deprecated, but maintained for backwards compatibility, use ClusterNetworks instead.",
+	"clusterNetworks":        "ClusterNetworks is a list of ClusterNetwork objects that defines the global overlay network's L3 space by specifying a set of CIDR and netmasks that the SDN can allocate addressed from.  If this is specified, then ClusterNetworkCIDR and HostSubnetLength may not be set.",
+	"hostSubnetLength":       "HostSubnetLength is the number of bits to allocate to each host's subnet e.g. 8 would mean a /24 network on the host.  Deprecated, but maintained for backwards compatibility, use ClusterNetworks instead.",
 	"serviceNetworkCIDR":     "ServiceNetwork is the CIDR string to specify the service networks",
 	"externalIPNetworkCIDRs": "ExternalIPNetworkCIDRs controls what values are acceptable for the service external IP field. If empty, no externalIP may be set. It may contain a list of CIDRs which are checked for access. If a CIDR is prefixed with !, IPs in that CIDR will be rejected. Rejections will be applied first, then the IP checked against one of the allowed CIDRs. You should ensure this range does not overlap with your nodes, pods, or service CIDRs for security reasons.",
 	"ingressIPNetworkCIDR":   "IngressIPNetworkCIDR controls the range to assign ingress ips from for services of type LoadBalancer on bare metal. If empty, ingress ips will not be assigned. It may contain a single CIDR that will be allocated from. For security reasons, you should ensure that this range does not overlap with the CIDRs reserved for external ips, nodes, pods, or services.",

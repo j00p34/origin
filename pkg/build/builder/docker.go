@@ -25,7 +25,8 @@ import (
 	"github.com/openshift/origin/pkg/build/controller/strategy"
 	buildutil "github.com/openshift/origin/pkg/build/util"
 	"github.com/openshift/origin/pkg/build/util/dockerfile"
-	"github.com/openshift/origin/pkg/client"
+
+	buildinternalversion "github.com/openshift/origin/pkg/build/generated/internalclientset/typed/build/internalversion"
 )
 
 // defaultDockerfilePath is the default path of the Dockerfile
@@ -36,13 +37,13 @@ type DockerBuilder struct {
 	dockerClient DockerClient
 	tar          tar.Tar
 	build        *buildapi.Build
-	client       client.BuildInterface
+	client       buildinternalversion.BuildResourceInterface
 	cgLimits     *s2iapi.CGroupLimits
 	inputDir     string
 }
 
 // NewDockerBuilder creates a new instance of DockerBuilder
-func NewDockerBuilder(dockerClient DockerClient, buildsClient client.BuildInterface, build *buildapi.Build, cgLimits *s2iapi.CGroupLimits) *DockerBuilder {
+func NewDockerBuilder(dockerClient DockerClient, buildsClient buildinternalversion.BuildResourceInterface, build *buildapi.Build, cgLimits *s2iapi.CGroupLimits) *DockerBuilder {
 	return &DockerBuilder{
 		dockerClient: dockerClient,
 		build:        build,
@@ -138,10 +139,8 @@ func (d *DockerBuilder) Build() error {
 	}
 
 	cname := containerName("docker", d.build.Name, d.build.Namespace, "post-commit")
-	startTime = metav1.Now()
-	err = execPostCommitHook(d.dockerClient, d.build.Spec.PostCommit, buildTag, cname)
 
-	timing.RecordNewStep(ctx, buildapi.StagePostCommit, buildapi.StepExecPostCommitHook, startTime, metav1.Now())
+	err = execPostCommitHook(ctx, d.dockerClient, d.build.Spec.PostCommit, buildTag, cname)
 
 	if err != nil {
 		d.build.Status.Phase = buildapi.BuildPhaseFailed
@@ -306,9 +305,15 @@ func (d *DockerBuilder) dockerBuild(dir string, tag string, secrets []buildapi.S
 		NoCache:        noCache,
 		Pull:           forcePull,
 		BuildArgs:      buildArgs,
-		NetworkMode:    string(getDockerNetworkMode()),
 	}
-
+	network, resolvConfHostPath, err := getContainerNetworkConfig()
+	if err != nil {
+		return err
+	}
+	opts.NetworkMode = network
+	if len(resolvConfHostPath) != 0 {
+		opts.BuildBinds = fmt.Sprintf("[\"%s:/etc/resolv.conf\"]", resolvConfHostPath)
+	}
 	// Though we are capped on memory and cpu at the cgroup parent level,
 	// some build containers care what their memory limit is so they can
 	// adapt, thus we need to set the memory limit at the container level
@@ -355,10 +360,10 @@ func getDockerfilePath(dir string, build *buildapi.Build) string {
 }
 func parseDockerfile(dockerfilePath string) (*parser.Node, error) {
 	f, err := os.Open(dockerfilePath)
-	defer f.Close()
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
 	// Parse the Dockerfile.
 	node, err := dockerfile.Parse(f)

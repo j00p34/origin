@@ -1,3 +1,5 @@
+// +build linux
+
 package node
 
 import (
@@ -11,24 +13,18 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
+	"github.com/golang/glog"
+	"github.com/vishvananda/netlink"
 
-	"github.com/openshift/origin/pkg/network/node/cniserver"
-
-	osclient "github.com/openshift/origin/pkg/client"
-	"github.com/openshift/origin/pkg/network"
-	networkapi "github.com/openshift/origin/pkg/network/apis/network"
-	"github.com/openshift/origin/pkg/network/common"
-	"github.com/openshift/origin/pkg/util/ipcmd"
-	"github.com/openshift/origin/pkg/util/netutils"
-	"github.com/openshift/origin/pkg/util/ovs"
-
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	kubeutilnet "k8s.io/apimachinery/pkg/util/net"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/tools/record"
 	kapi "k8s.io/kubernetes/pkg/api"
 	kapihelper "k8s.io/kubernetes/pkg/api/helper"
 	"k8s.io/kubernetes/pkg/apis/componentconfig"
@@ -40,6 +36,14 @@ import (
 	knetwork "k8s.io/kubernetes/pkg/kubelet/network"
 	ktypes "k8s.io/kubernetes/pkg/kubelet/types"
 	kexec "k8s.io/kubernetes/pkg/util/exec"
+
+	"github.com/openshift/origin/pkg/network"
+	networkapi "github.com/openshift/origin/pkg/network/apis/network"
+	"github.com/openshift/origin/pkg/network/common"
+	networkclient "github.com/openshift/origin/pkg/network/generated/internalclientset"
+	"github.com/openshift/origin/pkg/network/node/cniserver"
+	"github.com/openshift/origin/pkg/util/netutils"
+	"github.com/openshift/origin/pkg/util/ovs"
 )
 
 const (
@@ -50,6 +54,7 @@ const (
 type osdnPolicy interface {
 	Name() string
 	Start(node *OsdnNode) error
+	SupportsVNIDs() bool
 
 	AddNetNamespace(netns *networkapi.NetNamespace)
 	UpdateNetNamespace(netns *networkapi.NetNamespace, oldNetID uint32)
@@ -69,9 +74,11 @@ type OsdnNodeConfig struct {
 	SelfIP          string
 	RuntimeEndpoint string
 	MTU             uint32
+	EnableHostports bool
 
-	OSClient *osclient.Client
-	KClient  kclientset.Interface
+	NetworkClient networkclient.Interface
+	KClient       kclientset.Interface
+	Recorder      record.EventRecorder
 
 	KubeInformers kinternalinformers.SharedInformerFactory
 
@@ -82,7 +89,8 @@ type OsdnNodeConfig struct {
 type OsdnNode struct {
 	policy             osdnPolicy
 	kClient            kclientset.Interface
-	osClient           *osclient.Client
+	networkClient      networkclient.Interface
+	recorder           record.EventRecorder
 	oc                 *ovsController
 	networkInfo        *common.NetworkInfo
 	podManager         *podManager
@@ -109,6 +117,8 @@ type OsdnNode struct {
 	runtimeEndpoint       string
 	runtimeRequestTimeout time.Duration
 	runtimeService        kubeletapi.RuntimeService
+
+	egressIP *egressIPWatcher
 }
 
 // Called by higher layers to create the plugin SDN node instance
@@ -138,27 +148,27 @@ func New(c *OsdnNodeConfig) (network.NodeInterface, error) {
 	// we're ready yet
 	os.Remove(filepath.Join(cniDirPath, openshiftCNIFile))
 
-	log.Infof("Initializing SDN node of type %q with configured hostname %q (IP %q), iptables sync period %q", c.PluginName, c.Hostname, c.SelfIP, c.IPTablesSyncPeriod.String())
+	glog.Infof("Initializing SDN node of type %q with configured hostname %q (IP %q), iptables sync period %q", c.PluginName, c.Hostname, c.SelfIP, c.IPTablesSyncPeriod.String())
 	if c.Hostname == "" {
 		output, err := kexec.New().Command("uname", "-n").CombinedOutput()
 		if err != nil {
 			return nil, err
 		}
 		c.Hostname = strings.TrimSpace(string(output))
-		log.Infof("Resolved hostname to %q", c.Hostname)
+		glog.Infof("Resolved hostname to %q", c.Hostname)
 	}
 	if c.SelfIP == "" {
 		var err error
 		c.SelfIP, err = netutils.GetNodeIP(c.Hostname)
 		if err != nil {
-			log.V(5).Infof("Failed to determine node address from hostname %s; using default interface (%v)", c.Hostname, err)
+			glog.V(5).Infof("Failed to determine node address from hostname %s; using default interface (%v)", c.Hostname, err)
 			var defaultIP net.IP
 			defaultIP, err = kubeutilnet.ChooseHostInterface()
 			if err != nil {
 				return nil, err
 			}
 			c.SelfIP = defaultIP.String()
-			log.Infof("Resolved IP address to %q", c.SelfIP)
+			glog.Infof("Resolved IP address to %q", c.SelfIP)
 		}
 	}
 
@@ -170,14 +180,15 @@ func New(c *OsdnNodeConfig) (network.NodeInterface, error) {
 	if err != nil {
 		return nil, err
 	}
-	oc := NewOVSController(ovsif, pluginId, useConnTrack)
+	oc := NewOVSController(ovsif, pluginId, useConnTrack, c.SelfIP)
 
 	plugin := &OsdnNode{
 		policy:             policy,
 		kClient:            c.KClient,
-		osClient:           c.OSClient,
+		networkClient:      c.NetworkClient,
+		recorder:           c.Recorder,
 		oc:                 oc,
-		podManager:         newPodManager(c.KClient, policy, c.MTU, oc),
+		podManager:         newPodManager(c.KClient, policy, c.MTU, oc, c.EnableHostports),
 		localIP:            c.SelfIP,
 		hostName:           c.Hostname,
 		useConnTrack:       useConnTrack,
@@ -186,6 +197,7 @@ func New(c *OsdnNodeConfig) (network.NodeInterface, error) {
 		egressPolicies:     make(map[uint32][]networkapi.EgressNetworkPolicy),
 		egressDNS:          common.NewEgressDNS(),
 		kubeInformers:      c.KubeInformers,
+		egressIP:           newEgressIPWatcher(c.SelfIP, oc),
 
 		runtimeEndpoint: c.RuntimeEndpoint,
 		// 2 minutes is the current default value used in kubelet
@@ -198,19 +210,20 @@ func New(c *OsdnNodeConfig) (network.NodeInterface, error) {
 		return nil, err
 	}
 
+	RegisterMetrics()
+
 	return plugin, nil
 }
 
 // Detect whether we are upgrading from a pre-CNI openshift and clean up
 // interfaces and iptables rules that are no longer required
 func (node *OsdnNode) dockerPreCNICleanup() error {
-	exec := kexec.New()
-	itx := ipcmd.NewTransaction(exec, "lbr0")
-	itx.SetLink("down")
-	if err := itx.EndTransaction(); err != nil {
+	l, err := netlink.LinkByName("lbr0")
+	if err != nil {
 		// no cleanup required
 		return nil
 	}
+	_ = netlink.LinkSetDown(l)
 
 	node.clearLbr0IptablesRule = true
 
@@ -219,18 +232,18 @@ func (node *OsdnNode) dockerPreCNICleanup() error {
 	// OpenShift-in-a-container case, so we work around that by sending
 	// the messages by hand.
 	if _, err := osexec.Command("dbus-send", "--system", "--print-reply", "--reply-timeout=2000", "--type=method_call", "--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager.Reload").CombinedOutput(); err != nil {
-		log.Error(err)
+		glog.Error(err)
 	}
 	if _, err := osexec.Command("dbus-send", "--system", "--print-reply", "--reply-timeout=2000", "--type=method_call", "--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager.RestartUnit", "string:'docker.service' string:'replace'").CombinedOutput(); err != nil {
-		log.Error(err)
+		glog.Error(err)
 	}
 
 	// Delete pre-CNI interfaces
 	for _, intf := range []string{"lbr0", "vovsbr", "vlinuxbr"} {
-		itx := ipcmd.NewTransaction(exec, intf)
-		itx.DeleteLink()
-		itx.IgnoreError()
-		itx.EndTransaction()
+		l, err = netlink.LinkByName(intf)
+		if err != nil {
+			_ = netlink.LinkDel(l)
+		}
 	}
 
 	// Wait until docker has restarted since kubelet will exit if docker isn't running
@@ -238,7 +251,7 @@ func (node *OsdnNode) dockerPreCNICleanup() error {
 		return err
 	}
 
-	log.Infof("Cleaned up left-over openshift-sdn docker bridge and interfaces")
+	glog.Infof("Cleaned up left-over openshift-sdn docker bridge and interfaces")
 
 	return nil
 }
@@ -281,17 +294,27 @@ func (node *OsdnNode) killUpdateFailedPods(pods []kapi.Pod) error {
 			return err
 		}
 
-		log.V(5).Infof("Killing pod '%s/%s' sandbox due to failed restart", pod.Namespace, pod.Name)
+		// Make an event that the pod is going to be killed
+		podRef := &v1.ObjectReference{Kind: "Pod", Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID}
+		node.recorder.Eventf(podRef, v1.EventTypeWarning, "NetworkFailed", "The pod's network interface has been lost and the pod will be stopped.")
+
+		glog.V(5).Infof("Killing pod '%s/%s' sandbox due to failed restart", pod.Namespace, pod.Name)
 		if err := node.runtimeService.StopPodSandbox(sandboxID); err != nil {
-			log.Warningf("Failed to kill pod '%s/%s' sandbox: %v", pod.Namespace, pod.Name, err)
+			glog.Warningf("Failed to kill pod '%s/%s' sandbox: %v", pod.Namespace, pod.Name, err)
 		}
 	}
 	return nil
 }
 
 func (node *OsdnNode) Start() error {
+	glog.V(2).Infof("Starting openshift-sdn network plugin")
+
+	if err := validateNetworkPluginName(node.networkClient, node.policy.Name()); err != nil {
+		return fmt.Errorf("failed to validate network configuration: %v", err)
+	}
+
 	var err error
-	node.networkInfo, err = common.GetNetworkInfo(node.osClient)
+	node.networkInfo, err = common.GetNetworkInfo(node.networkClient)
 	if err != nil {
 		return fmt.Errorf("failed to get network information: %v", err)
 	}
@@ -302,7 +325,7 @@ func (node *OsdnNode) Start() error {
 	}
 	if err := node.networkInfo.CheckHostNetworks(hostIPNets); err != nil {
 		// checkHostNetworks() errors *should* be fatal, but we didn't used to check this, and we can't break (mostly-)working nodes on upgrade.
-		log.Errorf("Local networks conflict with SDN; this will eventually cause problems: %v", err)
+		glog.Errorf("Local networks conflict with SDN; this will eventually cause problems: %v", err)
 	}
 
 	node.localSubnetCIDR, err = node.getLocalSubnet()
@@ -310,7 +333,12 @@ func (node *OsdnNode) Start() error {
 		return err
 	}
 
-	nodeIPTables := newNodeIPTables(node.networkInfo.ClusterNetwork.String(), node.iptablesSyncPeriod, !node.useConnTrack)
+	var cidrList []string
+	for _, cn := range node.networkInfo.ClusterNetworks {
+		cidrList = append(cidrList, cn.ClusterCIDR.String())
+	}
+	nodeIPTables := newNodeIPTables(cidrList, node.iptablesSyncPeriod, !node.useConnTrack)
+
 	if err = nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}
@@ -324,16 +352,23 @@ func (node *OsdnNode) Start() error {
 	if err != nil {
 		return err
 	}
-
 	if err = node.policy.Start(node); err != nil {
 		return err
+	}
+	if node.policy.SupportsVNIDs() {
+		if err := node.SetupEgressNetworkPolicy(); err != nil {
+			return err
+		}
+		if err = node.egressIP.Start(node.networkClient, nodeIPTables); err != nil {
+			return err
+		}
 	}
 	if !node.useConnTrack {
 		node.watchServices()
 	}
 
-	log.V(5).Infof("Starting openshift-sdn pod manager")
-	if err := node.podManager.Start(cniserver.CNIServerSocketPath, node.localSubnetCIDR, node.networkInfo.ClusterNetwork); err != nil {
+	glog.V(2).Infof("Starting openshift-sdn pod manager")
+	if err := node.podManager.Start(cniserver.CNIServerSocketPath, node.localSubnetCIDR, node.networkInfo.ClusterNetworks); err != nil {
 		return err
 	}
 
@@ -350,7 +385,7 @@ func (node *OsdnNode) Start() error {
 				continue
 			}
 			if err := node.UpdatePod(p); err != nil {
-				log.Warningf("will restart pod '%s/%s' due to update failure on restart: %s", p.Namespace, p.Name, err)
+				glog.Warningf("will restart pod '%s/%s' due to update failure on restart: %s", p.Namespace, p.Name, err)
 				podsToKill = append(podsToKill, p)
 			} else if vnid, err := node.policy.GetVNID(p.Namespace); err == nil {
 				node.policy.EnsureVNIDRules(vnid)
@@ -361,7 +396,7 @@ func (node *OsdnNode) Start() error {
 		// we'll be able to set them up correctly
 		if len(podsToKill) > 0 {
 			if err := node.killUpdateFailedPods(podsToKill); err != nil {
-				log.Warningf("failed to restart pods that failed to update at startup: %v", err)
+				glog.Warningf("failed to restart pods that failed to update at startup: %v", err)
 			}
 		}
 	}
@@ -371,8 +406,14 @@ func (node *OsdnNode) Start() error {
 	}
 
 	go kwait.Forever(node.policy.SyncVNIDRules, time.Hour)
+	go kwait.Forever(func() {
+		gatherPeriodicMetrics(node.oc.ovs)
+	}, time.Minute*2)
 
-	log.V(5).Infof("openshift-sdn network plugin ready")
+	glog.V(2).Infof("openshift-sdn network plugin ready")
+
+	// Make an event that openshift-sdn started
+	node.recorder.Eventf(&v1.ObjectReference{Kind: "Node", Name: node.hostName}, v1.EventTypeNormal, "Starting", "Starting openshift-sdn.")
 
 	// Write our CNI config file out to disk to signal to kubelet that
 	// our network plugin is ready
@@ -455,7 +496,7 @@ func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventTyp
 		return
 	}
 
-	log.V(5).Infof("Watch %s event for Service %q", eventType, serv.Name)
+	glog.V(5).Infof("Watch %s event for Service %q", eventType, serv.Name)
 	oldServ, exists := oldObj.(*kapi.Service)
 	if exists {
 		if !isServiceChanged(oldServ, serv) {
@@ -466,7 +507,7 @@ func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventTyp
 
 	netid, err := node.policy.GetVNID(serv.Namespace)
 	if err != nil {
-		log.Errorf("Skipped adding service rules for serviceEvent: %v, Error: %v", eventType, err)
+		glog.Errorf("Skipped adding service rules for serviceEvent: %v, Error: %v", eventType, err)
 		return
 	}
 
@@ -476,6 +517,21 @@ func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventTyp
 
 func (node *OsdnNode) handleDeleteService(obj interface{}) {
 	serv := obj.(*kapi.Service)
-	log.V(5).Infof("Watch %s event for Service %q", watch.Deleted, serv.Name)
+	glog.V(5).Infof("Watch %s event for Service %q", watch.Deleted, serv.Name)
 	node.DeleteServiceRules(serv)
+}
+
+func validateNetworkPluginName(networkClient networkclient.Interface, pluginName string) error {
+	// Detect any plugin mismatches between node and master
+	clusterNetwork, err := networkClient.Network().ClusterNetworks().Get(networkapi.ClusterNetworkDefault, metav1.GetOptions{})
+	switch {
+	case errors.IsNotFound(err):
+		return fmt.Errorf("master has not created a default cluster network, network plugin %q can not start", pluginName)
+	case err != nil:
+		return fmt.Errorf("cannot fetch %q cluster network: %v", networkapi.ClusterNetworkDefault, err)
+	}
+	if clusterNetwork.PluginName != strings.ToLower(pluginName) {
+		return fmt.Errorf("detected network plugin mismatch between OpenShift node(%q) and master(%q)", pluginName, clusterNetwork.PluginName)
+	}
+	return nil
 }

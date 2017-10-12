@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"k8s.io/code-generator/cmd/go-to-protobuf/protobuf"
 	"k8s.io/gengo/args"
-	"k8s.io/kube-gen/cmd/go-to-protobuf/protobuf"
 
 	flag "github.com/spf13/pflag"
 )
@@ -46,7 +46,7 @@ func init() {
 	fullPackageList = append(fullPackageList,
 		`github.com/openshift/origin/pkg/authorization/apis/authorization/v1`,
 		`github.com/openshift/origin/pkg/build/apis/build/v1`,
-		`github.com/openshift/origin/pkg/deploy/apis/apps/v1`,
+		`github.com/openshift/origin/pkg/apps/apis/apps/v1`,
 		`github.com/openshift/origin/pkg/image/apis/image/v1`,
 		`github.com/openshift/origin/pkg/oauth/apis/oauth/v1`,
 		`github.com/openshift/origin/pkg/project/apis/project/v1`,

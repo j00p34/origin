@@ -45,8 +45,12 @@ endif
 
 NEWEST_GO_FILE = $(shell find $(SRC_DIRS) -name \*.go -exec $(STAT) {} \; \
                    | sort -r | head -n 1 | sed "s/.* //")
+
+NEWEST_E2ETEST_SOURCE = $(shell find test/e2e -name \*.go -exec $(STAT) {} \; \
+                   | sort -r | head -n 1 | sed "s/.* //")
+
 TYPES_FILES    = $(shell find pkg/apis -name types.go)
-GO_VERSION     = 1.8
+GO_VERSION     = 1.9
 
 ALL_ARCH=amd64 arm arm64 ppc64le s390x
 
@@ -108,12 +112,14 @@ NON_VENDOR_DIRS = $(shell $(DOCKER_CMD) glide nv)
 # "apiserver" instead of "bin/apiserver".
 #########################################################################
 build: .init .generate_files \
-       $(BINDIR)/controller-manager $(BINDIR)/apiserver \
-       $(BINDIR)/user-broker
+	$(BINDIR)/apiserver \
+	$(BINDIR)/controller-manager \
+	$(BINDIR)/user-broker
 
 user-broker: $(BINDIR)/user-broker
 $(BINDIR)/user-broker: .init contrib/cmd/user-broker \
-	  $(shell find contrib/cmd/user-broker -type f)
+	  $(shell find contrib/cmd/user-broker -type f) \
+	  $(shell find contrib/pkg/broker -type f)
 	$(DOCKER_CMD) $(GO_BUILD) -o $@ $(SC_PKG)/contrib/cmd/user-broker
 
 # We'll rebuild apiserver if any go file has changed (ie. NEWEST_GO_FILE)
@@ -137,27 +143,27 @@ $(BINDIR)/controller-manager: .init .generate_files cmd/controller-manager $(NEW
 	touch $@
 
 $(BINDIR)/defaulter-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/defaulter-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/defaulter-gen
 
 $(BINDIR)/deepcopy-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/deepcopy-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/deepcopy-gen
 
 $(BINDIR)/conversion-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/conversion-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/conversion-gen
 
 $(BINDIR)/client-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/client-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/client-gen
 
 $(BINDIR)/lister-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/lister-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/lister-gen
 
 $(BINDIR)/informer-gen: .init
-	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/kubernetes/cmd/libs/go2idl/informer-gen
+	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/vendor/k8s.io/code-generator/cmd/informer-gen
 
-$(BINDIR)/openapi-gen: vendor/k8s.io/kubernetes/cmd/libs/go2idl/openapi-gen
+$(BINDIR)/openapi-gen: vendor/k8s.io/code-generator/cmd/openapi-gen
 	$(DOCKER_CMD) go build -o $@ $(SC_PKG)/$^
 
-$(BINDIR)/e2e.test: .init
+$(BINDIR)/e2e.test: .init $(NEWEST_E2ETEST_SOURCE) $(NEWEST_GO_FILE)
 	$(DOCKER_CMD) go test -c -o $@ $(SC_PKG)/test/e2e
 
 # Regenerate all files if the gen exes changed or any "types.go" files changed
@@ -167,16 +173,16 @@ $(BINDIR)/e2e.test: .init
 		--v 1 --logtostderr \
 		--go-header-file "vendor/github.com/kubernetes/repo-infra/verify/boilerplate/boilerplate.go.txt" \
 		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog" \
-		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1alpha1" \
+		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1beta1" \
 	  	--extra-peer-dirs "$(SC_PKG)/pkg/apis/servicecatalog" \
-		--extra-peer-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1alpha1" \
+		--extra-peer-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1beta1" \
 		--output-file-base "zz_generated.defaults"
 	# Generate deep copies
 	$(DOCKER_CMD) $(BINDIR)/deepcopy-gen \
 		--v 1 --logtostderr \
 		--go-header-file "vendor/github.com/kubernetes/repo-infra/verify/boilerplate/boilerplate.go.txt" \
 		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog" \
-		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1alpha1" \
+		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1beta1" \
 		--bounding-dirs "github.com/kubernetes-incubator/service-catalog" \
 		--output-file-base zz_generated.deepcopy
 	# Generate conversions
@@ -184,7 +190,7 @@ $(BINDIR)/e2e.test: .init
 		--v 1 --logtostderr \
 		--go-header-file "vendor/github.com/kubernetes/repo-infra/verify/boilerplate/boilerplate.go.txt" \
 		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog" \
-		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1alpha1" \
+		--input-dirs "$(SC_PKG)/pkg/apis/servicecatalog/v1beta1" \
 		--output-file-base zz_generated.conversion
 	# generate all pkg/client contents
 	$(DOCKER_CMD) $(BUILD_DIR)/update-client-gen.sh
@@ -192,10 +198,8 @@ $(BINDIR)/e2e.test: .init
 	$(DOCKER_CMD) $(BINDIR)/openapi-gen \
 		--v 1 --logtostderr \
 		--go-header-file "vendor/github.com/kubernetes/repo-infra/verify/boilerplate/boilerplate.go.txt" \
-		--input-dirs "github.com/kubernetes-incubator/service-catalog/pkg/apis/servicecatalog/v1alpha1,k8s.io/client-go/pkg/api/v1,k8s.io/apimachinery/pkg/apis/meta/v1" \
+		--input-dirs "github.com/kubernetes-incubator/service-catalog/pkg/apis/servicecatalog/v1beta1,k8s.io/api/core/v1,k8s.io/apimachinery/pkg/apis/meta/v1" \
 		--output-package "github.com/kubernetes-incubator/service-catalog/pkg/openapi"
-	# generate codec
-	$(DOCKER_CMD) $(BUILD_DIR)/update-codecgen.sh
 	touch $@
 
 # Some prereq stuff
@@ -214,7 +218,7 @@ $(BINDIR)/e2e.test: .init
 .PHONY: verify verify-client-gen
 verify: .init .generate_files verify-client-gen
 	@echo Running gofmt:
-	@$(DOCKER_CMD) gofmt -l -s $(TOP_TEST_DIRS) $(TOP_SRC_DIRS) &> .out || true
+	@$(DOCKER_CMD) gofmt -l -s $(TOP_TEST_DIRS) $(TOP_SRC_DIRS)>.out 2>&1||true
 	@bash -c '[ "`cat .out`" == "" ] || \
 	  (echo -e "\n*** Please 'gofmt' the following:" ; cat .out ; echo ; false)'
 	@rm .out
@@ -226,7 +230,7 @@ verify: .init .generate_files verify-client-gen
 	  'for i in $$(find $(TOP_SRC_DIRS) -name *.go \
 	    | grep -v generated \
 	    | grep -v ^pkg/client/ \
-	    | grep -v v1alpha1/defaults.go); \
+	    | grep -v v1beta1/defaults.go); \
 	  do \
 	   golint --set_exit_status $$i || exit 1; \
 	  done'
@@ -238,7 +242,7 @@ verify: .init .generate_files verify-client-gen
 	@rm .out
 	@#
 	@echo Running href checker:
-	@$(DOCKER_CMD) verify-links.sh .
+	@$(DOCKER_CMD) verify-links.sh -t .
 	@echo Running errexit checker:
 	@$(DOCKER_CMD) build/verify-errexit.sh
 
@@ -288,11 +292,11 @@ test-e2e: .generate_files $(BINDIR)/e2e.test
 clean: clean-bin clean-build-image clean-generated clean-coverage
 
 clean-bin:
-	rm -rf $(BINDIR)
+	$(DOCKER_CMD) rm -rf $(BINDIR)
 	rm -f .generate_exes
 
 clean-build-image:
-	rm -rf .pkg
+	$(DOCKER_CMD) rm -rf .pkg
 	rm -f .scBuildImage
 	docker rmi -f scbuildimage > /dev/null 2>&1 || true
 
@@ -315,7 +319,7 @@ purge-generated:
 	find $(TOP_SRC_DIRS) -name zz_generated* -exec rm {} \;
 	find $(TOP_SRC_DIRS) -type d -name *_generated -exec rm -rf {} \;
 	rm -f pkg/openapi/openapi_generated.go
-	echo 'package v1alpha1' > pkg/apis/servicecatalog/v1alpha1/types.generated.go
+	echo 'package v1beta1' > pkg/apis/servicecatalog/v1beta1/types.generated.go
 
 clean-coverage:
 	rm -f $(COVERAGE)
@@ -326,6 +330,8 @@ images: user-broker-image controller-manager-image apiserver-image
 
 images-all: $(addprefix arch-image-,$(ALL_ARCH))
 arch-image-%:
+	$(MAKE) clean-bin
+	$(MAKE) ARCH=$* build
 	$(MAKE) ARCH=$* images
 
 define build-and-tag # (service, image, mutable_image, prefix)
@@ -395,4 +401,6 @@ endif
 
 release-push: $(addprefix release-push-,$(ALL_ARCH))
 release-push-%:
+	$(MAKE) clean-bin
+	$(MAKE) ARCH=$* build
 	$(MAKE) ARCH=$* push

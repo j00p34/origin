@@ -20,10 +20,10 @@ import (
 	authenticationclient "github.com/openshift/origin/pkg/auth/client"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
 	jenkinscontroller "github.com/openshift/origin/pkg/build/controller/jenkins"
-	"github.com/openshift/origin/pkg/client"
 	oadmission "github.com/openshift/origin/pkg/cmd/server/admission"
 	configapi "github.com/openshift/origin/pkg/cmd/server/api"
 	"github.com/openshift/origin/pkg/config/cmd"
+	templateclient "github.com/openshift/origin/pkg/template/generated/internalclientset"
 )
 
 func Register(plugins *admission.Plugins) {
@@ -38,14 +38,14 @@ type jenkinsBootstrapper struct {
 
 	privilegedRESTClientConfig restclient.Config
 	serviceClient              coreclient.ServicesGetter
-	openshiftClient            client.Interface
+	templateClient             templateclient.Interface
 
 	jenkinsConfig configapi.JenkinsPipelineConfig
 }
 
 var _ = oadmission.WantsJenkinsPipelineConfig(&jenkinsBootstrapper{})
 var _ = oadmission.WantsRESTClientConfig(&jenkinsBootstrapper{})
-var _ = oadmission.WantsOpenshiftClient(&jenkinsBootstrapper{})
+var _ = oadmission.WantsOpenshiftInternalTemplateClient(&jenkinsBootstrapper{})
 var _ = kadmission.WantsInternalKubeClientSet(&jenkinsBootstrapper{})
 
 // NewJenkinsBootstrapper returns an admission plugin that will create required jenkins resources as the user if they are needed.
@@ -84,7 +84,7 @@ func (a *jenkinsBootstrapper) Admit(attributes admission.Attributes) error {
 	}
 
 	glog.V(3).Infof("Adding new jenkins service %q to the project %q", svcName, namespace)
-	jenkinsTemplate := jenkinscontroller.NewPipelineTemplate(namespace, a.jenkinsConfig, a.openshiftClient)
+	jenkinsTemplate := jenkinscontroller.NewPipelineTemplate(namespace, a.jenkinsConfig, a.templateClient)
 	objects, errs := jenkinsTemplate.Process()
 	if len(errs) > 0 {
 		return kutilerrors.NewAggregate(errs)
@@ -150,13 +150,16 @@ func (q *jenkinsBootstrapper) SetInternalKubeClientSet(c kclientset.Interface) {
 	q.serviceClient = c.Core()
 }
 
-func (a *jenkinsBootstrapper) SetOpenshiftClient(oclient client.Interface) {
-	a.openshiftClient = oclient
+func (a *jenkinsBootstrapper) SetOpenshiftInternalTemplateClient(c templateclient.Interface) {
+	a.templateClient = c
 }
 
 func (a *jenkinsBootstrapper) Validate() error {
-	if a.openshiftClient == nil {
-		return fmt.Errorf("missing openshiftClient")
+	if a.serviceClient == nil {
+		return fmt.Errorf("missing serviceClient")
+	}
+	if a.templateClient == nil {
+		return fmt.Errorf("missing templateClient")
 	}
 	return nil
 }

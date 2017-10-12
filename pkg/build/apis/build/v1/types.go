@@ -9,6 +9,9 @@ import (
 )
 
 // +genclient
+// +genclient:method=UpdateDetails,verb=update,subresource=details
+// +genclient:method=Clone,verb=create,subresource=clone,input=BuildRequest
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Build encapsulates the inputs needed to produce a new deployable image, as well as
 // the status of the execution and a reference to the Pod which executed the build.
@@ -839,6 +842,8 @@ type ImageLabel struct {
 }
 
 // +genclient
+// +genclient:method=Instantiate,verb=create,subresource=instantiate,input=BuildRequest,result=Build
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Build configurations define a build process for new Docker images. There are three types of builds possible - a Docker build using a Dockerfile, a Source-to-Image build that uses a specially prepared base image that accepts source code that it can make runnable, and a custom build that can run // arbitrary Docker images as a base and accept the build parameters. Builds run on the cluster and on completion are pushed to the Docker registry specified in the "output" section. A build can be triggered via a webhook, when the base image changes, or when a user manually requests a new build be // created.
 //
@@ -982,6 +987,8 @@ const (
 	ConfigChangeBuildTriggerType BuildTriggerType = "ConfigChange"
 )
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // BuildList is a collection of Builds.
 type BuildList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -991,6 +998,8 @@ type BuildList struct {
 	// items is a list of builds
 	Items []Build `json:"items" protobuf:"bytes,2,rep,name=items"`
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildConfigList is a collection of BuildConfigs.
 type BuildConfigList struct {
@@ -1025,6 +1034,8 @@ type GitInfo struct {
 	GitSourceRevision `json:",inline" protobuf:"bytes,2,opt,name=gitSourceRevision"`
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // BuildLog is the (unused) resource associated with the build log redirector
 type BuildLog struct {
 	metav1.TypeMeta `json:",inline"`
@@ -1045,6 +1056,8 @@ type SourceStrategyOptions struct {
 	// incremental overrides the source-strategy incremental option in the build config
 	Incremental *bool `json:"incremental,omitempty" protobuf:"varint,1,opt,name=incremental"`
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildRequest is the resource used to pass parameters to build generator
 type BuildRequest struct {
@@ -1083,6 +1096,8 @@ type BuildRequest struct {
 	SourceStrategyOptions *SourceStrategyOptions `json:"sourceStrategyOptions,omitempty" protobuf:"bytes,10,opt,name=sourceStrategyOptions"`
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // BinaryBuildRequestOptions are the options required to fully speficy a binary build request
 type BinaryBuildRequestOptions struct {
 	metav1.TypeMeta `json:",inline"`
@@ -1112,6 +1127,8 @@ type BinaryBuildRequestOptions struct {
 	// revision.committerEmail of the source control user
 	CommitterEmail string `json:"revision.committerEmail,omitempty" protobuf:"bytes,8,opt,name=revisionCommitterEmail"`
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildLogOptions is the REST options for a build log
 type BuildLogOptions struct {

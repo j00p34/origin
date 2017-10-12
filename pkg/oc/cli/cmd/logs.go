@@ -15,11 +15,11 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	kcmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
+	buildclient "github.com/openshift/origin/pkg/build/generated/internalclientset/typed/build/internalversion"
 	buildutil "github.com/openshift/origin/pkg/build/util"
-	osclient "github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 )
 
 // LogsRecommendedCommandName is the recommended command name
@@ -66,7 +66,7 @@ type OpenShiftLogsOptions struct {
 	KubeLogOptions *kcmd.LogsOptions
 	// Client enables access to the Build object when processing
 	// build logs for Jenkins Pipeline Strategy builds
-	Client osclient.BuildsNamespacer
+	Client buildclient.BuildsGetter
 	// Namespace is a required parameter when accessing the Build object when processing
 	// build logs for Jenkins Pipeline Strategy builds
 	Namespace string
@@ -138,11 +138,11 @@ func (o *OpenShiftLogsOptions) Complete(f *clientcmd.Factory, cmd *cobra.Command
 		return errors.New("expected a resource")
 	}
 
-	client, _, err := f.Clients()
+	client, err := f.OpenshiftInternalBuildClient()
 	if err != nil {
 		return err
 	}
-	o.Client = client
+	o.Client = client.Build()
 
 	version := kcmdutil.GetFlagInt64(cmd, "version")
 	_, resource := meta.UnsafeGuessKindToResource(infos[0].Mapping.GroupVersionKind)

@@ -10,25 +10,68 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/diff"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/rbac"
 	"k8s.io/kubernetes/pkg/apis/rbac/v1beta1"
 	rulevalidation "k8s.io/kubernetes/pkg/registry/rbac/validation"
+	kbootstrappolicy "k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac/bootstrappolicy"
 
 	"github.com/openshift/origin/pkg/api/v1"
+	"github.com/openshift/origin/pkg/cmd/server/admin"
 	"github.com/openshift/origin/pkg/cmd/server/bootstrappolicy"
+	templateapi "github.com/openshift/origin/pkg/template/apis/template"
 
 	// install all APIs
 	_ "github.com/openshift/origin/pkg/api/install"
 )
 
-func TestOpenshiftRoles(t *testing.T) {
-	roles := bootstrappolicy.GetBootstrapOpenshiftRoles("openshift")
-	list := &api.List{}
-	for i := range roles {
-		list.Items = append(list.Items, &roles[i])
+func TestCreateBootstrapPolicyFile(t *testing.T) {
+	f, err := ioutil.TempFile("", "TestCreateBootstrapPolicyFile")
+	if err != nil {
+		t.Fatal(err)
 	}
-	testObjects(t, list, "bootstrap_openshift_roles.yaml")
+	defer os.Remove(f.Name())
+	cmd := admin.NewCommandCreateBootstrapPolicyFile("", "", nil)
+	cmd.Flag("filename").Value.Set(f.Name())
+	cmd.Flag("openshift-namespace").Value.Set("openshift-custom-ns")
+	cmd.Run(cmd, nil)
+	data, err := ioutil.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &templateapi.Template{}
+	if _, _, err := api.Codecs.UniversalDecoder().Decode(data, nil, template); err != nil {
+		t.Fatal(err)
+	}
+	list := &api.List{Items: template.Objects}
+	testObjects(t, list, "bootstrap_policy_file.yaml")
+}
+
+func TestBootstrapNamespaceRoles(t *testing.T) {
+	allRoles := bootstrappolicy.GetBootstrapNamespaceRoles()
+	list := &api.List{}
+	// enforce a strict ordering
+	for _, namespace := range sets.StringKeySet(allRoles).List() {
+		roles := allRoles[namespace]
+		for i := range roles {
+			list.Items = append(list.Items, &roles[i])
+		}
+	}
+	testObjects(t, list, "bootstrap_namespace_roles.yaml")
+}
+
+func TestGetBootstrapNamespaceRoleBindings(t *testing.T) {
+	allRoleBindings := bootstrappolicy.GetBootstrapNamespaceRoleBindings()
+	list := &api.List{}
+	// enforce a strict ordering
+	for _, namespace := range sets.StringKeySet(allRoleBindings).List() {
+		roleBindings := allRoleBindings[namespace]
+		for i := range roleBindings {
+			list.Items = append(list.Items, &roleBindings[i])
+		}
+	}
+	testObjects(t, list, "bootstrap_namespace_role_bindings.yaml")
 }
 
 func TestBootstrapProjectRoleBindings(t *testing.T) {
@@ -109,6 +152,7 @@ func TestCovers(t *testing.T) {
 	var clusterAdmin *rbac.ClusterRole
 	var storageAdmin *rbac.ClusterRole
 	var imageBuilder *rbac.ClusterRole
+	var nodeRole *rbac.ClusterRole
 
 	for i := range allRoles {
 		role := allRoles[i]
@@ -135,6 +179,8 @@ func TestCovers(t *testing.T) {
 			storageAdmin = &role
 		case bootstrappolicy.ImageBuilderRoleName:
 			imageBuilder = &role
+		case bootstrappolicy.NodeRoleName:
+			nodeRole = &role
 		}
 	}
 
@@ -175,5 +221,20 @@ func TestCovers(t *testing.T) {
 	// Make sure the master has full permissions
 	if covers, miss := rulevalidation.Covers(systemMaster.Rules, clusterAdmin.Rules); !covers {
 		t.Errorf("failed to cover: %#v", miss)
+	}
+
+	// Make sure our node role covers upstream node rules
+	if covers, miss := rulevalidation.Covers(nodeRole.Rules, kbootstrappolicy.NodeRules()); !covers {
+		t.Errorf("upstream node role has extra permissions:")
+		for _, r := range miss {
+			t.Logf("\t%s", r.CompactString())
+		}
+	}
+	// Make sure our node role doesn't have any extra permissions
+	if covers, miss := rulevalidation.Covers(kbootstrappolicy.NodeRules(), nodeRole.Rules); !covers {
+		t.Errorf("openshift node role has extra permissions:")
+		for _, r := range miss {
+			t.Logf("\t%s", r.CompactString())
+		}
 	}
 }

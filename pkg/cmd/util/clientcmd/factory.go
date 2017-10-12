@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/pkg/apis/apps"
 	kclientcmd "k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/v1"
@@ -27,10 +28,10 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/resource"
 	"k8s.io/kubernetes/pkg/printers"
 
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
+	deployutil "github.com/openshift/origin/pkg/apps/util"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
 	"github.com/openshift/origin/pkg/cmd/util"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
-	deployutil "github.com/openshift/origin/pkg/deploy/util"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 )
 
@@ -177,7 +178,7 @@ func (f *Factory) ApproximatePodTemplateForObject(object runtime.Object) (*api.P
 	case *deployapi.DeploymentConfig:
 		fallback := t.Spec.Template
 
-		_, kc, err := f.Clients()
+		kc, err := f.ClientSet()
 		if err != nil {
 			return fallback, err
 		}
@@ -259,11 +260,15 @@ func (f *Factory) PodForResource(resource string, timeout time.Duration) (string
 		}
 		return pod.Name, nil
 	case deployapi.Resource("deploymentconfigs"), deployapi.LegacyResource("deploymentconfigs"):
-		oc, kc, err := f.Clients()
+		appsClient, err := f.OpenshiftInternalAppsClient()
 		if err != nil {
 			return "", err
 		}
-		dc, err := oc.DeploymentConfigs(namespace).Get(name, metav1.GetOptions{})
+		kc, err := f.ClientSet()
+		if err != nil {
+			return "", err
+		}
+		dc, err := appsClient.Apps().DeploymentConfigs(namespace).Get(name, metav1.GetOptions{})
 		if err != nil {
 			return "", err
 		}
@@ -301,6 +306,24 @@ func (f *Factory) PodForResource(resource string, timeout time.Duration) (string
 			return "", err
 		}
 		selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
+		if err != nil {
+			return "", err
+		}
+		pod, _, err := kcmdutil.GetFirstPod(kc.Core(), namespace, selector, timeout, sortBy)
+		if err != nil {
+			return "", err
+		}
+		return pod.Name, nil
+	case apps.Resource("statefulsets"):
+		kc, err := f.ClientSet()
+		if err != nil {
+			return "", err
+		}
+		s, err := kc.Apps().StatefulSets(namespace).Get(name, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		selector, err := metav1.LabelSelectorAsSelector(s.Spec.Selector)
 		if err != nil {
 			return "", err
 		}

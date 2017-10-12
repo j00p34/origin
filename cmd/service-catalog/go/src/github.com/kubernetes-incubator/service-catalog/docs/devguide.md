@@ -21,6 +21,9 @@ layout:
     ├── .glide                  # Glide cache (untracked)
     ├── bin                     # Destination for binaries compiled for linux/amd64 (untracked)
     ├── build                   # Contains build-related scripts and subdirectories containing Dockerfiles
+    ├── charts                  # Helm charts for deployment
+    │   └── catalog             # Helm chart for deploying the service catalog
+    │   └── ups-broker          # Helm chart for deploying the user-provided service broker
     ├── cmd                     # Contains "main" Go packages for each service catalog component binary
     │   └── apiserver           # The service catalog API server binary
     │   └── controller-manager  # The service catalog controller manager binary
@@ -31,11 +34,11 @@ layout:
     │   └── hack                # Non-build related scripts
     │   └── jenkins             # Jenkins configuration
     │   └── pkg                 # Contrib golang code
-    ├── charts                  # Helm charts for deployment
-    │   └── catalog             # Helm chart for deploying the catalog
-    │   └── ups-broker          # Helm chart for deploying the user-provided service broker
+    │   └── travis              # Travis configuration
     ├── docs                    # Documentation
     ├── pkg                     # Contains all non-"main" Go packages
+    ├── plugin                  # Plugins for API server
+    ├── test                    # Integration and e2e tests
     └── vendor                  # Glide-managed dependencies
 
 ## Working on Issues
@@ -111,13 +114,16 @@ Define a local working directory:
 
 From your shell:
 ```bash
-#Set your working directory
+# Run the following only if `echo $GOPATH` shows nothing.
+export GOPATH=$(go env GOPATH)
+
+# Set your working directory
 working_dir=$GOPATH/src/github.com/kubernetes-incubator
 
-#Set user to match your github profile name
+# Set user to match your github profile name
 user={your github profile name}
 
-#Create your clone:
+# Create your clone:
 mkdir -p $working_dir
 cd $working_dir
 git clone https://github.com/$user/service-catalog.git
@@ -160,8 +166,8 @@ To deploy to Kubernetes, see the
 
     * `pkg/client/*_generated`
     * `pkg/apis/servicecatalog/zz_*`
-    * `pkg/apis/servicecatalog/v1alpha1/zz_*`
-    * `pkg/apis/servicecatalog/v1alpha1/types.generated.go`
+    * `pkg/apis/servicecatalog/v1beta1/zz_*`
+    * `pkg/apis/servicecatalog/v1beta1/types.generated.go`
     * `pkg/openapi/openapi_generated.go`
 
 * Running `make clean` or `make clean-generated` will roll back (via
@@ -254,6 +260,27 @@ cluster you regularly use and are familiar with.  One of the choices you can
 make when deploying the catalog is whether to make the API server store its
 resources in an external etcd server, or in third party resources.
 
+If you have recently merged changes that haven't yet made it into a
+release, you probably want to deploy the canary images. Always use the
+canary images when testing local changes.
+
+For more information see the
+[installation instructions](./install-1.7.md). The last two lines of
+the following `helm install` example show the canary images being
+installed with the other standard installation options.
+
+```
+helm install ../charts/catalog \
+    --name ${HELM_RELEASE_NAME} --namespace ${SVCCAT_NAMESPACE} \
+    --set apiserver.auth.enabled=true \
+    --set useAggregator=true \
+    --set apiserver.tls.ca=$(base64 --wrap 0 ${SC_SERVING_CA}) \
+    --set apiserver.tls.cert=$(base64 --wrap 0 ${SC_SERVING_CERT}) \
+    --set apiserver.tls.key=$(base64 --wrap 0 ${SC_SERVING_KEY}) \
+    --set apiserver.image=quay.io/kubernetes-service-catalog/apiserver:canary \
+    --set controllerManager.image=quay.io/kubernetes-service-catalog/controller-manager:canary
+```
+
 If you choose etcd storage, the helm chart will launch an etcd server for you
 in the same pod as the service-catalog API server. You will be responsible for
 the data in the etcd server container.
@@ -264,5 +291,5 @@ the Kubernetes cluster as third party resources.
 
 ## Demo walkthrough
 
-Check out the [walk-through](walkthrough.md) for a detailed guide of an example
-deployment.
+Check out the [introduction](./introduction.md) to get started with 
+installation and a self-guided demo.

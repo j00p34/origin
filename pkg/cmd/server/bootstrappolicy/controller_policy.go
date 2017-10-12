@@ -25,7 +25,6 @@ const (
 	InfraBuildControllerServiceAccountName                      = "build-controller"
 	InfraBuildConfigChangeControllerServiceAccountName          = "build-config-change-controller"
 	InfraDeploymentConfigControllerServiceAccountName           = "deploymentconfig-controller"
-	InfraDeploymentTriggerControllerServiceAccountName          = "deployment-trigger-controller"
 	InfraDeployerControllerServiceAccountName                   = "deployer-controller"
 	InfraImageTriggerControllerServiceAccountName               = "image-trigger-controller"
 	InfraImageImportControllerServiceAccountName                = "image-import-controller"
@@ -59,6 +58,12 @@ var (
 	controllerRoleBindings = []rbac.ClusterRoleBinding{}
 )
 
+func bindControllerRole(saName string, roleName string) {
+	roleBinding := rbac.NewClusterBinding(roleName).SAs(DefaultOpenShiftInfraNamespace, saName).BindingOrDie()
+	addDefaultMetadata(&roleBinding)
+	controllerRoleBindings = append(controllerRoleBindings, roleBinding)
+}
+
 func addControllerRole(role rbac.ClusterRole) {
 	if !strings.HasPrefix(role.Name, saRolePrefix) {
 		glog.Fatalf(`role %q must start with %q`, role.Name, saRolePrefix)
@@ -77,10 +82,12 @@ func addControllerRoleToSA(saNamespace, saName string, role rbac.ClusterRole) {
 		}
 	}
 
+	addDefaultMetadata(&role)
 	controllerRoles = append(controllerRoles, role)
 
-	controllerRoleBindings = append(controllerRoleBindings,
-		rbac.NewClusterBinding(role.Name).SAs(saNamespace, saName).BindingOrDie())
+	roleBinding := rbac.NewClusterBinding(role.Name).SAs(saNamespace, saName).BindingOrDie()
+	addDefaultMetadata(&roleBinding)
+	controllerRoleBindings = append(controllerRoleBindings, roleBinding)
 }
 
 func eventsRule() rbac.PolicyRule {
@@ -143,19 +150,6 @@ func init() {
 		},
 	})
 
-	// deployment-trigger-controller
-	addControllerRole(rbac.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + InfraDeploymentTriggerControllerServiceAccountName},
-		Rules: []rbac.PolicyRule{
-			rbac.NewRule("get", "list", "watch").Groups(kapiGroup).Resources("replicationcontrollers").RuleOrDie(),
-			rbac.NewRule("get", "list", "watch").Groups(deployGroup, legacyDeployGroup).Resources("deploymentconfigs").RuleOrDie(),
-			rbac.NewRule("get", "list", "watch").Groups(imageGroup, legacyImageGroup).Resources("imagestreams").RuleOrDie(),
-
-			rbac.NewRule("create").Groups(deployGroup, legacyDeployGroup).Resources("deploymentconfigs/instantiate").RuleOrDie(),
-			eventsRule(),
-		},
-	})
-
 	// template-instance-controller
 	addControllerRole(rbac.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + InfraTemplateInstanceControllerServiceAccountName},
@@ -167,8 +161,9 @@ func init() {
 	})
 
 	// template-instance-controller
-	controllerRoleBindings = append(controllerRoleBindings,
-		rbac.NewClusterBinding(AdminRoleName).SAs(DefaultOpenShiftInfraNamespace, InfraTemplateInstanceControllerServiceAccountName).BindingOrDie())
+	templateInstanceController := rbac.NewClusterBinding(AdminRoleName).SAs(DefaultOpenShiftInfraNamespace, InfraTemplateInstanceControllerServiceAccountName).BindingOrDie()
+	addDefaultMetadata(&templateInstanceController)
+	controllerRoleBindings = append(controllerRoleBindings, templateInstanceController)
 
 	// origin-namespace-controller
 	addControllerRole(rbac.ClusterRole{
@@ -229,7 +224,7 @@ func init() {
 		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + InfraServiceServingCertServiceAccountName},
 		Rules: []rbac.PolicyRule{
 			rbac.NewRule("list", "watch", "update").Groups(kapiGroup).Resources("services").RuleOrDie(),
-			rbac.NewRule("get", "list", "watch", "create", "update").Groups(kapiGroup).Resources("secrets").RuleOrDie(),
+			rbac.NewRule("get", "list", "watch", "create", "update", "delete").Groups(kapiGroup).Resources("secrets").RuleOrDie(),
 			eventsRule(),
 		},
 	})
@@ -325,12 +320,14 @@ func init() {
 	})
 
 	// horizontal-pod-autoscaler-controller (the OpenShift resources only)
-	addControllerRoleToSA("kube-system", InfraHorizontalPodAutoscalerControllerServiceAccountName, rbac.ClusterRole{
+	addControllerRole(rbac.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + InfraHorizontalPodAutoscalerControllerServiceAccountName},
 		Rules: []rbac.PolicyRule{
 			rbac.NewRule("get", "update").Groups(deployGroup, legacyDeployGroup).Resources("deploymentconfigs/scale").RuleOrDie(),
 		},
 	})
+
+	bindControllerRole(InfraHorizontalPodAutoscalerControllerServiceAccountName, "system:controller:horizontal-pod-autoscaler")
 
 	addControllerRole(rbac.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + InfraTemplateServiceBrokerServiceAccountName},

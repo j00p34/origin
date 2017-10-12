@@ -117,7 +117,7 @@ var etcdStorageData = map[schema.GroupVersionResource]struct {
 	},
 	// --
 
-	// github.com/openshift/origin/pkg/deploy/apis/apps/v1
+	// github.com/openshift/origin/pkg/apps/apis/apps/v1
 	gvr("", "v1", "deploymentconfigs"): {
 		stub:             `{"metadata": {"name": "dc1"}, "spec": {"selector": {"d": "c"}, "template": {"metadata": {"labels": {"d": "c"}}, "spec": {"containers": [{"image": "fedora:latest", "name": "container2"}]}}}}`,
 		expectedEtcdPath: "openshift.io/deploymentconfigs/etcdstoragepathtestnamespace/dc1",
@@ -290,11 +290,11 @@ var etcdStorageData = map[schema.GroupVersionResource]struct {
 		expectedGVK:      gvkP("", "v1", "HostSubnet"), // expect the legacy group to be persisted
 	},
 	gvr("", "v1", "clusternetworks"): {
-		stub:             `{"metadata": {"name": "cn1"}, "network": "192.168.0.0/24", "hostsubnetlength": 4, "serviceNetwork": "192.168.1.0/24"}`,
+		stub:             `{"metadata": {"name": "cn1"}, "serviceNetwork": "192.168.1.0/24", "clusterNetworks": [{"CIDR": "192.166.0.0/16", "hostSubnetLength": 8}]}`,
 		expectedEtcdPath: "openshift.io/registry/sdnnetworks/cn1",
 	},
 	gvr("network.openshift.io", "v1", "clusternetworks"): {
-		stub:             `{"metadata": {"name": "cn1g"}, "network": "192.168.0.0/24", "hostsubnetlength": 4, "serviceNetwork": "192.168.1.0/24"}`,
+		stub:             `{"metadata": {"name": "cn1g"}, "serviceNetwork": "192.168.1.0/24", "clusterNetworks": [{"CIDR": "192.167.0.0/16", "hostSubnetLength": 8}]}`,
 		expectedEtcdPath: "openshift.io/registry/sdnnetworks/cn1g",
 		expectedGVK:      gvkP("", "v1", "ClusterNetwork"), // expect the legacy group to be persisted
 	},
@@ -671,7 +671,7 @@ var ephemeralWhiteList = createEphemeralWhiteList(
 	gvr("build.openshift.io", "v1", "binarybuildrequestoptionses"),
 	// --
 
-	// github.com/openshift/origin/pkg/deploy/apis/apps/v1
+	// github.com/openshift/origin/pkg/apps/apis/apps/v1
 
 	// used for streaming deployment logs from pod, not stored in etcd
 	gvr("", "v1", "deploymentlogs"),
@@ -814,7 +814,7 @@ var ephemeralWhiteList = createEphemeralWhiteList(
 	// --
 )
 
-// Only add kinds to this list when there is no mapping from GVK to GVR (and thus there is no way to create the object)
+// Only add kinds to this list when there is no way to create the object
 var kindWhiteList = sets.NewString(
 	// k8s.io/apimachinery/pkg/apis/meta/v1
 	"APIVersions",
@@ -886,8 +886,7 @@ func testEtcdStoragePath(t *testing.T, etcdServer *etcdtest.EtcdTestServer, gett
 	if err != nil {
 		t.Fatalf("error getting master config: %#v", err)
 	}
-	masterConfig.AdmissionConfig.PluginOrderOverride = []string{"PodNodeSelector"}                        // remove most admission checks to make testing easier
-	masterConfig.KubernetesMasterConfig.AdmissionConfig.PluginOrderOverride = []string{"PodNodeSelector"} // remove most admission checks to make testing easier
+	masterConfig.AdmissionConfig.PluginOrderOverride = []string{"PodNodeSelector"} // remove most admission checks to make testing easier
 	// enable APIs that are off by default
 	masterConfig.KubernetesMasterConfig.APIServerArguments = map[string][]string{
 		"runtime-config": {
@@ -949,14 +948,14 @@ func testEtcdStoragePath(t *testing.T, etcdServer *etcdtest.EtcdTestServer, gett
 		kind := gvk.Kind
 		pkgPath := apiType.PkgPath()
 
+		if kindWhiteList.Has(kind) {
+			kindSeen.Insert(kind)
+			continue
+		}
+
 		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 		if err != nil {
-			kindSeen.Insert(kind)
-			if kindWhiteList.Has(kind) {
-				// t.Logf("skipping test for %s from %s because its GVK %s is whitelisted and has no mapping", kind, pkgPath, gvk)
-			} else {
-				t.Errorf("no mapping found for %s from %s but its GVK %s is not whitelisted", kind, pkgPath, gvk)
-			}
+			t.Errorf("unexpected error getting mapping for %s from %s with GVK %s: %v", kind, pkgPath, gvk, err)
 			continue
 		}
 

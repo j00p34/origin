@@ -6,23 +6,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/golang/glog"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	kapi "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/v1"
 
-	"github.com/golang/glog"
+	"github.com/openshift/origin/pkg/api/apihelpers"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
 	buildapiv1 "github.com/openshift/origin/pkg/build/apis/build/v1"
 	"github.com/openshift/origin/pkg/build/builder/cmd/dockercfg"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
-	"github.com/openshift/origin/pkg/util/namer"
 	"github.com/openshift/origin/pkg/version"
 )
 
 const (
 	// dockerSocketPath is the default path for the Docker socket inside the builder container
 	dockerSocketPath      = "/var/run/docker.sock"
+	crioSocketPath        = "/var/run/crio.sock"
 	sourceSecretMountPath = "/var/run/secrets/openshift.io/source"
 
 	DockerPushSecretMountPath      = "/var/run/secrets/openshift.io/push"
@@ -91,10 +93,33 @@ func setupDockerSocket(pod *v1.Pod) {
 	}
 }
 
+// setupCrioSocket configures the pod to support the host's Crio socket
+func setupCrioSocket(pod *v1.Pod) {
+	crioSocketVolume := v1.Volume{
+		Name: "crio-socket",
+		VolumeSource: v1.VolumeSource{
+			HostPath: &v1.HostPathVolumeSource{
+				Path: crioSocketPath,
+			},
+		},
+	}
+
+	crioSocketVolumeMount := v1.VolumeMount{
+		Name:      "crio-socket",
+		MountPath: crioSocketPath,
+	}
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes,
+		crioSocketVolume)
+	pod.Spec.Containers[0].VolumeMounts =
+		append(pod.Spec.Containers[0].VolumeMounts,
+			crioSocketVolumeMount)
+}
+
 // mountSecretVolume is a helper method responsible for actual mounting secret
 // volumes into a pod.
 func mountSecretVolume(pod *v1.Pod, container *v1.Container, secretName, mountPath, volumeSuffix string) {
-	volumeName := namer.GetName(secretName, volumeSuffix, kvalidation.DNS1123LabelMaxLength)
+	volumeName := apihelpers.GetName(secretName, volumeSuffix, kvalidation.DNS1123LabelMaxLength)
 
 	// coerce from RFC1123 subdomain to RFC1123 label.
 	volumeName = strings.Replace(volumeName, ".", "-", -1)
@@ -239,17 +264,6 @@ func setupAdditionalSecrets(pod *v1.Pod, container *v1.Container, secrets []buil
 		mountSecretVolume(pod, container, secretSpec.SecretSource.Name, secretSpec.MountPath, "secret")
 		glog.V(3).Infof("Installed additional secret in %s, in Pod %s/%s", secretSpec.MountPath, pod.Namespace, pod.Name)
 	}
-}
-
-// getContainerVerbosity returns the defined BUILD_LOGLEVEL value
-func getContainerVerbosity(containerEnv []v1.EnvVar) (verbosity string) {
-	for _, env := range containerEnv {
-		if env.Name == "BUILD_LOGLEVEL" {
-			verbosity = env.Value
-			break
-		}
-	}
-	return
 }
 
 // getPodLabels creates labels for the Build Pod

@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apimachinery/registered"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -85,7 +84,8 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		return nil, err
 	}
 
-	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(buildapiv1.GroupName, c.Registry, c.Scheme, metav1.ParameterCodec, c.Codecs)
+	parameterCodec := runtime.NewParameterCodec(c.Scheme)
+	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(buildapiv1.GroupName, c.Registry, c.Scheme, parameterCodec, c.Codecs)
 	apiGroupInfo.GroupMeta.GroupVersion = buildapiv1.SchemeGroupVersion
 	apiGroupInfo.VersionedResourcesStorageMap[buildapiv1.SchemeGroupVersion.Version] = v1Storage
 	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
@@ -161,12 +161,12 @@ func (c *BuildServerConfig) newV1RESTStorage() (map[string]rest.Storage, error) 
 	v1Storage := map[string]rest.Storage{}
 	v1Storage["builds"] = buildStorage
 	v1Storage["builds/clone"] = buildclone.NewStorage(buildGenerator)
-	v1Storage["builds/log"] = buildlogregistry.NewREST(buildStorage, buildStorage, kubeInternalClient.Core(), nodeConnectionInfoGetter)
+	v1Storage["builds/log"] = buildlogregistry.NewREST(buildClient.Build(), kubeInternalClient.Core(), nodeConnectionInfoGetter)
 	v1Storage["builds/details"] = buildDetailsStorage
 
 	v1Storage["buildConfigs"] = buildConfigStorage
 	v1Storage["buildConfigs/webhooks"] = buildConfigWebHooks
 	v1Storage["buildConfigs/instantiate"] = buildconfiginstantiate.NewStorage(buildGenerator)
-	v1Storage["buildConfigs/instantiatebinary"] = buildconfiginstantiate.NewBinaryStorage(buildGenerator, buildStorage, kubeInternalClient.Core(), nodeConnectionInfoGetter)
+	v1Storage["buildConfigs/instantiatebinary"] = buildconfiginstantiate.NewBinaryStorage(buildGenerator, buildClient.Build(), kubeInternalClient.Core(), nodeConnectionInfoGetter)
 	return v1Storage, nil
 }

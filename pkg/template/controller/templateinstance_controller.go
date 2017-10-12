@@ -26,16 +26,18 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/resource"
 
 	"github.com/golang/glog"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/openshift/origin/pkg/authorization/util"
-	"github.com/openshift/origin/pkg/client"
+	buildclient "github.com/openshift/origin/pkg/build/generated/internalclientset"
 	"github.com/openshift/origin/pkg/config/cmd"
 	templateapi "github.com/openshift/origin/pkg/template/apis/template"
 	templateapiv1 "github.com/openshift/origin/pkg/template/apis/template/v1"
+	templateinternalclient "github.com/openshift/origin/pkg/template/client/internalversion"
 	"github.com/openshift/origin/pkg/template/generated/informers/internalversion/template/internalversion"
 	templateclient "github.com/openshift/origin/pkg/template/generated/internalclientset"
-	internalversiontemplate "github.com/openshift/origin/pkg/template/generated/internalclientset/typed/template/internalversion"
 	templatelister "github.com/openshift/origin/pkg/template/generated/listers/template/internalversion"
+	restutil "github.com/openshift/origin/pkg/util/rest"
 )
 
 const readinessTimeout = time.Hour
@@ -48,9 +50,13 @@ const readinessTimeout = time.Hour
 type TemplateInstanceController struct {
 	restmapper     meta.RESTMapper
 	config         *rest.Config
-	oc             client.Interface
-	kc             kclientsetinternal.Interface
-	templateclient internalversiontemplate.TemplateInterface
+	templateClient templateclient.Interface
+
+	// FIXME: Remove then cient when the build configs are able to report the
+	//				status of the last build.
+	buildClient buildclient.Interface
+
+	kc kclientsetinternal.Interface
 
 	lister   templatelister.TemplateInstanceLister
 	informer cache.SharedIndexInformer
@@ -61,16 +67,16 @@ type TemplateInstanceController struct {
 }
 
 // NewTemplateInstanceController returns a new TemplateInstanceController.
-func NewTemplateInstanceController(config *rest.Config, oc client.Interface, kc kclientsetinternal.Interface, templateclient templateclient.Interface, informer internalversion.TemplateInstanceInformer) *TemplateInstanceController {
+func NewTemplateInstanceController(config *rest.Config, kc kclientsetinternal.Interface, buildClient buildclient.Interface, templateClient templateclient.Interface, informer internalversion.TemplateInstanceInformer) *TemplateInstanceController {
 	c := &TemplateInstanceController{
-		restmapper:       client.DefaultMultiRESTMapper(),
+		restmapper:       restutil.DefaultMultiRESTMapper(),
 		config:           config,
-		oc:               oc,
 		kc:               kc,
-		templateclient:   templateclient.Template(),
+		templateClient:   templateClient,
+		buildClient:      buildClient,
 		lister:           informer.Lister(),
 		informer:         informer.Informer(),
-		queue:            workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "TemplateInstanceController"),
+		queue:            workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "openshift_template_instance_controller"),
 		readinessLimiter: workqueue.NewItemFastSlowRateLimiter(5*time.Second, 20*time.Second, 200),
 	}
 
@@ -84,6 +90,8 @@ func NewTemplateInstanceController(config *rest.Config, oc client.Interface, kc 
 		DeleteFunc: func(obj interface{}) {
 		},
 	})
+
+	prometheus.MustRegister(c)
 
 	return c
 }
@@ -150,21 +158,23 @@ func (c *TemplateInstanceController) sync(key string) error {
 				Type:    templateapi.TemplateInstanceInstantiateFailure,
 				Status:  kapi.ConditionTrue,
 				Reason:  "Failed",
-				Message: err.Error(),
+				Message: formatError(err),
 			})
 		}
 	}
 
 	if !templateInstance.HasCondition(templateapi.TemplateInstanceInstantiateFailure, kapi.ConditionTrue) {
 		ready, err := c.checkReadiness(templateInstance, time.Now())
-		if err != nil {
+		if err != nil && !kerrors.IsTimeout(err) {
+			// NB: kerrors.IsTimeout() is true in the case of an API server
+			// timeout, not the timeout caused by readinessTimeout expiring.
 			glog.V(4).Infof("TemplateInstance controller: checkReadiness %s returned %v", key, err)
 
 			templateInstance.SetCondition(templateapi.TemplateInstanceCondition{
 				Type:    templateapi.TemplateInstanceInstantiateFailure,
 				Status:  kapi.ConditionTrue,
 				Reason:  "Failed",
-				Message: err.Error(),
+				Message: formatError(err),
 			})
 			templateInstance.SetCondition(templateapi.TemplateInstanceCondition{
 				Type:    templateapi.TemplateInstanceReady,
@@ -190,7 +200,7 @@ func (c *TemplateInstanceController) sync(key string) error {
 		}
 	}
 
-	_, err = c.templateclient.TemplateInstances(templateInstance.Namespace).UpdateStatus(templateInstance)
+	_, err = c.templateClient.Template().TemplateInstances(templateInstance.Namespace).UpdateStatus(templateInstance)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("TemplateInstance status update failed: %v", err))
 		return err
@@ -214,7 +224,7 @@ func (c *TemplateInstanceController) checkReadiness(templateInstance *templateap
 	u := &user.DefaultInfo{Name: templateInstance.Spec.Requester.Username}
 
 	for _, object := range templateInstance.Status.Objects {
-		if !canCheckReadiness(object.Ref) {
+		if !CanCheckReadiness(object.Ref) {
 			continue
 		}
 
@@ -256,7 +266,7 @@ func (c *TemplateInstanceController) checkReadiness(templateInstance *templateap
 			continue
 		}
 
-		ready, failed, err := checkReadiness(c.oc, object.Ref, obj)
+		ready, failed, err := CheckReadiness(c.buildClient, object.Ref, obj)
 		if err != nil {
 			return false, err
 		}
@@ -413,7 +423,8 @@ func (c *TemplateInstanceController) instantiate(templateInstance *templateapi.T
 
 	glog.V(4).Infof("TemplateInstance controller: creating TemplateConfig for %s/%s", templateInstance.Namespace, templateInstance.Name)
 
-	template, err = c.oc.TemplateConfigs(templateInstance.Namespace).Create(template)
+	tc := templateinternalclient.NewTemplateProcessorClient(c.templateClient.Template().RESTClient(), templateInstance.Namespace)
+	template, err = tc.Process(template)
 	if err != nil {
 		return err
 	}
@@ -535,4 +546,18 @@ func (c *TemplateInstanceController) instantiate(templateInstance *templateapi.T
 	}
 
 	return nil
+}
+
+// formatError returns err.Error(), unless err is an Aggregate, in which case it
+// "\n"-separates the contained errors.
+func formatError(err error) string {
+	if err, ok := err.(kerrs.Aggregate); ok {
+		var errorStrings []string
+		for _, err := range err.Errors() {
+			errorStrings = append(errorStrings, err.Error())
+		}
+		return strings.Join(errorStrings, "\n")
+	}
+
+	return err.Error()
 }

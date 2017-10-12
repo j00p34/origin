@@ -84,12 +84,12 @@ func (o *MigrateAuthorizationOptions) Complete(name string, f *clientcmd.Factory
 		return err
 	}
 
-	client, kclient, err := f.Clients()
+	kclient, err := f.ClientSet()
 	if err != nil {
 		return err
 	}
 
-	if err := clientcmd.Gate(client, "", "3.7.0"); err != nil {
+	if err := clientcmd.LegacyPolicyResourceGate(kclient.Discovery()); err != nil {
 		return err
 	}
 

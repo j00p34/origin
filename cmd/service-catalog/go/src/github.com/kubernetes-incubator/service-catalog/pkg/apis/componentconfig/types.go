@@ -66,9 +66,9 @@ type ControllerManagerConfiguration struct {
 	// all informers.
 	ResyncInterval time.Duration
 
-	// BrokerRelistInterval is the interval on which Broker's catalogs are re-
+	// ServiceBrokerRelistInterval is the interval on which Broker's catalogs are re-
 	// listed.
-	BrokerRelistInterval time.Duration
+	ServiceBrokerRelistInterval time.Duration
 
 	// Whether or not to send the proposed optional
 	// OpenServiceBroker API Context Profile field
@@ -92,4 +92,8 @@ type ControllerManagerConfiguration struct {
 
 	// enableContentionProfiling enables lock contention profiling, if enableProfiling is true.
 	EnableContentionProfiling bool
+
+	// ReconciliationRetryDuration is the longest time to attempt reconciliation
+	// on a given resource before failing the reconciliation
+	ReconciliationRetryDuration time.Duration
 }

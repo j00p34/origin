@@ -15,11 +15,11 @@ import (
 
 	"github.com/openshift/origin/pkg/auth/ldaputil"
 	"github.com/openshift/origin/pkg/auth/ldaputil/ldapclient"
-	osclient "github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/cmd/server/api"
 	"github.com/openshift/origin/pkg/cmd/server/api/validation"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
 	"github.com/openshift/origin/pkg/oc/admin/groups/sync"
+	usertypedclient "github.com/openshift/origin/pkg/user/generated/internalclientset/typed/user/internalversion"
 )
 
 const PruneRecommendedName = "prune"
@@ -63,8 +63,8 @@ type PruneOptions struct {
 	// Confirm determines whether or not to write to OpenShift
 	Confirm bool
 
-	// GroupsInterface is the interface used to interact with OpenShift Group objects
-	GroupInterface osclient.GroupInterface
+	// GroupInterface is the interface used to interact with OpenShift Group objects
+	GroupInterface usertypedclient.GroupInterface
 
 	// Stderr is the writer to write warnings and errors to
 	Stderr io.Writer
@@ -132,26 +132,27 @@ func NewCmdPrune(name, fullName string, f *clientcmd.Factory, out io.Writer) *co
 
 func (o *PruneOptions) Complete(whitelistFile, blacklistFile, configFile string, args []string, f *clientcmd.Factory) error {
 	var err error
-	o.Whitelist, err = buildOpenShiftGroupNameList(args, whitelistFile)
-	if err != nil {
-		return err
-	}
-
-	o.Blacklist, err = buildOpenShiftGroupNameList([]string{}, blacklistFile)
-	if err != nil {
-		return err
-	}
 
 	o.Config, err = decodeSyncConfigFromFile(configFile)
 	if err != nil {
 		return err
 	}
 
-	osClient, _, err := f.Clients()
+	o.Whitelist, err = buildOpenShiftGroupNameList(args, whitelistFile, o.Config.LDAPGroupUIDToOpenShiftGroupNameMapping)
 	if err != nil {
 		return err
 	}
-	o.GroupInterface = osClient.Groups()
+
+	o.Blacklist, err = buildOpenShiftGroupNameList([]string{}, blacklistFile, o.Config.LDAPGroupUIDToOpenShiftGroupNameMapping)
+	if err != nil {
+		return err
+	}
+
+	userClient, err := f.OpenshiftInternalUserClient()
+	if err != nil {
+		return err
+	}
+	o.GroupInterface = userClient.User().Groups()
 
 	return nil
 }
@@ -236,7 +237,7 @@ func (o *PruneOptions) GetBlacklist() []string {
 	return o.Blacklist
 }
 
-func (o *PruneOptions) GetClient() osclient.GroupInterface {
+func (o *PruneOptions) GetClient() usertypedclient.GroupInterface {
 	return o.GroupInterface
 }
 

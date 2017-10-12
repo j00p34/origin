@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -22,10 +23,12 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	kcmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 
-	"github.com/openshift/origin/pkg/client"
+	appsclient "github.com/openshift/origin/pkg/apps/generated/internalclientset/typed/apps/internalversion"
+	buildclient "github.com/openshift/origin/pkg/build/generated/internalclientset/typed/build/internalversion"
 	"github.com/openshift/origin/pkg/cmd/server/bootstrappolicy"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
+	imageclient "github.com/openshift/origin/pkg/image/generated/internalclientset/typed/image/internalversion"
 	"github.com/openshift/origin/pkg/image/prune"
 	oserrors "github.com/openshift/origin/pkg/util/errors"
 	"github.com/openshift/origin/pkg/util/netutils"
@@ -35,6 +38,8 @@ import (
 const PruneImagesRecommendedName = "images"
 
 var errNoToken = errors.New("you must use a client config with a token")
+
+const registryURLNotReachable = `(?:operation|connection) timed out|no such host`
 
 var (
 	imagesLongDesc = templates.LongDesc(`
@@ -46,7 +51,9 @@ var (
 		registry by supplying --all=false flag.
 
 		By default, the prune operation performs a dry run making no changes to internal registry. A
-		--confirm flag is needed for changes to be effective.
+		--confirm flag is needed for changes to be effective. The flag requires a valid route to the
+		integrated Docker registry. If this command is run outside of the cluster network, the route
+		needs to be provided using --registry-url.
 
 		Only a user with a cluster role %s or higher who is logged-in will be able to actually
 		delete the images.
@@ -58,9 +65,9 @@ var (
 		Insecure connection is allowed in the following cases unless certificate-authority is
 		specified:
 
-		 1. --force-insecure is given
-		 2. provided registry-url is prefixed with http://
-		 3. registry url is a private or link-local address
+		 1. --force-insecure is given  
+		 2. provided registry-url is prefixed with http://  
+		 3. registry url is a private or link-local address  
 		 4. user's config allows for insecure connection (the user logged in to the cluster with
 			--insecure-skip-tls-verify or allowed for insecure connection)`)
 
@@ -105,7 +112,9 @@ type PruneImagesOptions struct {
 	ForceInsecure       bool
 
 	ClientConfig *restclient.Config
-	OSClient     client.Interface
+	AppsClient   appsclient.AppsInterface
+	BuildClient  buildclient.BuildInterface
+	ImageClient  imageclient.ImageInterface
 	KubeClient   kclientset.Interface
 	Out          io.Writer
 }
@@ -135,7 +144,7 @@ func NewCmdPruneImages(f *clientcmd.Factory, parentName, name string, out io.Wri
 		},
 	}
 
-	cmd.Flags().BoolVar(&opts.Confirm, "confirm", opts.Confirm, "If true, specify that image pruning should proceed. Defaults to false, displaying what would be deleted but not actually deleting anything.")
+	cmd.Flags().BoolVar(&opts.Confirm, "confirm", opts.Confirm, "If true, specify that image pruning should proceed. Defaults to false, displaying what would be deleted but not actually deleting anything. Requires a valid route to the integrated Docker registry (see --registry-url).")
 	cmd.Flags().BoolVar(opts.AllImages, "all", *opts.AllImages, "Include images that were not pushed to the registry but have been mirrored by pullthrough.")
 	cmd.Flags().DurationVar(opts.KeepYoungerThan, "keep-younger-than", *opts.KeepYoungerThan, "Specify the minimum age of an image for it to be considered a candidate for pruning.")
 	cmd.Flags().IntVar(opts.KeepTagRevisions, "keep-tag-revisions", *opts.KeepTagRevisions, "Specify the number of image revisions for a tag in an image stream that will be preserved.")
@@ -181,11 +190,13 @@ func (o *PruneImagesOptions) Complete(f *clientcmd.Factory, cmd *cobra.Command, 
 	}
 	o.ClientConfig = clientConfig
 
-	osClient, kubeClient, err := getClients(f)
+	appsClient, buildClient, imageClient, kubeClient, err := getClients(f)
 	if err != nil {
 		return err
 	}
-	o.OSClient = osClient
+	o.AppsClient = appsClient
+	o.BuildClient = buildClient
+	o.ImageClient = imageClient
 	o.KubeClient = kubeClient
 
 	return nil
@@ -216,12 +227,12 @@ func (o PruneImagesOptions) Validate() error {
 
 // Run contains all the necessary functionality for the OpenShift cli prune images command.
 func (o PruneImagesOptions) Run() error {
-	allImages, err := o.OSClient.Images().List(metav1.ListOptions{})
+	allImages, err := o.ImageClient.Images().List(metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	allStreams, err := o.OSClient.ImageStreams(o.Namespace).List(metav1.ListOptions{})
+	allStreams, err := o.ImageClient.ImageStreams(o.Namespace).List(metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -236,21 +247,21 @@ func (o PruneImagesOptions) Run() error {
 		return err
 	}
 
-	allBCs, err := o.OSClient.BuildConfigs(o.Namespace).List(metav1.ListOptions{})
+	allBCs, err := o.BuildClient.BuildConfigs(o.Namespace).List(metav1.ListOptions{})
 	// We need to tolerate 'not found' errors for buildConfigs since they may be disabled in Atomic
 	err = oserrors.TolerateNotFoundError(err)
 	if err != nil {
 		return err
 	}
 
-	allBuilds, err := o.OSClient.Builds(o.Namespace).List(metav1.ListOptions{})
+	allBuilds, err := o.BuildClient.Builds(o.Namespace).List(metav1.ListOptions{})
 	// We need to tolerate 'not found' errors for builds since they may be disabled in Atomic
 	err = oserrors.TolerateNotFoundError(err)
 	if err != nil {
 		return err
 	}
 
-	allDCs, err := o.OSClient.DeploymentConfigs(o.Namespace).List(metav1.ListOptions{})
+	allDCs, err := o.AppsClient.DeploymentConfigs(o.Namespace).List(metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -304,7 +315,10 @@ func (o PruneImagesOptions) Run() error {
 
 	registryURL, err := registryPinger.Ping(registryHost)
 	if err != nil {
-		return fmt.Errorf("error communicating with registry %s: %v", registryHost, err)
+		if len(o.RegistryUrlOverride) == 0 && regexp.MustCompile(registryURLNotReachable).MatchString(err.Error()) {
+			err = fmt.Errorf("%s\n* Please provide a reachable route to the integrated registry using --registry-url.", err.Error())
+		}
+		return fmt.Errorf("failed to ping registry %s: %v", registryHost, err)
 	}
 
 	options := prune.PrunerOptions{
@@ -327,7 +341,10 @@ func (o PruneImagesOptions) Run() error {
 	if o.Namespace != metav1.NamespaceAll {
 		options.Namespace = o.Namespace
 	}
-	pruner := prune.NewPruner(options)
+	pruner, err := prune.NewPruner(options)
+	if err != nil {
+		return err
+	}
 
 	w := tabwriter.NewWriter(o.Out, 10, 4, 3, ' ', 0)
 	defer w.Flush()
@@ -339,8 +356,8 @@ func (o PruneImagesOptions) Run() error {
 	manifestDeleter := &describingManifestDeleter{w: w}
 
 	if o.Confirm {
-		imageDeleter.delegate = prune.NewImageDeleter(o.OSClient.Images())
-		imageStreamDeleter.delegate = prune.NewImageStreamDeleter(o.OSClient)
+		imageDeleter.delegate = prune.NewImageDeleter(o.ImageClient)
+		imageStreamDeleter.delegate = prune.NewImageStreamDeleter(o.ImageClient)
 		layerLinkDeleter.delegate = prune.NewLayerLinkDeleter()
 		blobDeleter.delegate = prune.NewBlobDeleter()
 		manifestDeleter.delegate = prune.NewManifestDeleter()
@@ -365,25 +382,32 @@ func (p *describingImageStreamDeleter) GetImageStream(stream *imageapi.ImageStre
 	return stream, nil
 }
 
-func (p *describingImageStreamDeleter) UpdateImageStream(stream *imageapi.ImageStream, image *imageapi.Image, updatedTags []string) (*imageapi.ImageStream, error) {
-	if !p.headerPrinted {
-		p.headerPrinted = true
-		fmt.Fprintln(p.w, "Deleting references from image streams to images ...")
-		fmt.Fprintln(p.w, "STREAM\tIMAGE\tTAGS")
-	}
-
-	fmt.Fprintf(p.w, "%s/%s\t%s\t%s\n", stream.Namespace, stream.Name, image.Name, strings.Join(updatedTags, ", "))
-
+func (p *describingImageStreamDeleter) UpdateImageStream(stream *imageapi.ImageStream) (*imageapi.ImageStream, error) {
 	if p.delegate == nil {
 		return stream, nil
 	}
 
-	updatedStream, err := p.delegate.UpdateImageStream(stream, image, updatedTags)
+	updatedStream, err := p.delegate.UpdateImageStream(stream)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error updating image stream %s/%s to remove references to image %s: %v\n", stream.Namespace, stream.Name, image.Name, err)
+		fmt.Fprintf(os.Stderr, "error updating image stream %s/%s to remove image references: %v\n", stream.Namespace, stream.Name, err)
 	}
 
 	return updatedStream, err
+}
+
+func (p *describingImageStreamDeleter) NotifyImageStreamPrune(stream *imageapi.ImageStream, updatedTags []string, deletedTags []string) {
+	if !p.headerPrinted {
+		p.headerPrinted = true
+		fmt.Fprintln(p.w, "Deleting references from image streams to images ...")
+		fmt.Fprintln(p.w, "STREAM\tACTION\tTAGS")
+	}
+
+	if len(updatedTags) > 0 {
+		fmt.Fprintf(p.w, "%s/%s\tUpdated\t%s\n", stream.Namespace, stream.Name, strings.Join(updatedTags, ", "))
+	}
+	if len(deletedTags) > 0 {
+		fmt.Fprintf(p.w, "%s/%s\tDeleted\t%s\n", stream.Namespace, stream.Name, strings.Join(deletedTags, ", "))
+	}
 }
 
 // describingImageDeleter prints information about each image being deleted.
@@ -512,21 +536,33 @@ func (p *describingManifestDeleter) DeleteManifest(registryClient *http.Client, 
 }
 
 // getClients returns a OpenShift client and Kube client.
-func getClients(f *clientcmd.Factory) (*client.Client, kclientset.Interface, error) {
+func getClients(f *clientcmd.Factory) (appsclient.AppsInterface, buildclient.BuildInterface, imageclient.ImageInterface, kclientset.Interface, error) {
 	clientConfig, err := f.ClientConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	if len(clientConfig.BearerToken) == 0 {
-		return nil, nil, errNoToken
+		return nil, nil, nil, nil, errNoToken
 	}
 
-	osClient, kubeClient, err := f.Clients()
+	kubeClient, err := f.ClientSet()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return osClient, kubeClient, err
+	appsClient, err := appsclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	buildClient, err := buildclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	imageClient, err := imageclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return appsClient, buildClient, imageClient, kubeClient, err
 }
 
 // getRegistryClient returns a registry client. Note that registryCABundle and registryInsecure=true are

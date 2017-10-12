@@ -14,11 +14,9 @@ import (
 	kfake "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
 
 	api "github.com/openshift/origin/pkg/api"
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
 	authorizationapi "github.com/openshift/origin/pkg/authorization/apis/authorization"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
-	"github.com/openshift/origin/pkg/client"
-	"github.com/openshift/origin/pkg/client/testclient"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	oauthapi "github.com/openshift/origin/pkg/oauth/apis/oauth"
 	projectapi "github.com/openshift/origin/pkg/project/apis/project"
@@ -37,7 +35,6 @@ type describeClient struct {
 	T         *testing.T
 	Namespace string
 	Err       error
-	*testclient.Fake
 }
 
 // DescriberCoverageExceptions is the list of API types that do NOT have corresponding describers
@@ -88,7 +85,6 @@ var MissingDescriberCoverageExceptions = []reflect.Type{
 }
 
 func TestDescriberCoverage(t *testing.T) {
-	c := &client.Client{}
 
 main:
 	for _, apiType := range kapi.Scheme.KnownTypes(api.SchemeGroupVersion) {
@@ -113,7 +109,7 @@ main:
 		}
 
 		gk := api.SchemeGroupVersion.WithKind(apiType.Name()).GroupKind()
-		_, ok := DescriberFor(gk, &rest.Config{}, c, kfake.NewSimpleClientset(), "")
+		_, ok := DescriberFor(gk, &rest.Config{}, kfake.NewSimpleClientset(), "")
 		if !ok {
 			t.Errorf("missing describer for %v.  Check pkg/cmd/cli/describe/describer.go", apiType)
 		}

@@ -15,10 +15,6 @@ import (
 )
 
 const (
-	//TODO - when https://github.com/kubernetes-incubator/service-catalog/pull/939 sufficiently progresses, this block should be removed
-	requesterUsernameTitle       = "Template service broker: requester username"
-	requesterUsernameDescription = "OpenShift user requesting provision/bind"
-
 	noDescriptionProvided = "No description provided."
 )
 
@@ -43,16 +39,8 @@ func serviceFromTemplate(template *templateapi.Template) *api.Service {
 		}
 	}
 
-	//TODO - when https://github.com/kubernetes-incubator/service-catalog/pull/939 sufficiently progresses, this block should be replaced
-	// with the commented out block immediately following it ... note we no longer require the param, in case the new approach is used
-	properties := map[string]*jsschema.Schema{
-		templateapi.RequesterUsernameParameterKey: {
-			Title:       requesterUsernameTitle,
-			Description: requesterUsernameDescription,
-			Type:        []jsschema.PrimitiveType{jsschema.StringType},
-		},
-	}
-	//properties := map[string]*jsschema.Schema{}
+	properties := map[string]*jsschema.Schema{}
+	paramOrdering := []string{}
 	required := []string{}
 	for _, param := range template.Parameters {
 		properties[param.Name] = &jsschema.Schema{
@@ -64,6 +52,7 @@ func serviceFromTemplate(template *templateapi.Template) *api.Service {
 		if param.Required && param.Generate == "" {
 			required = append(required, param.Name)
 		}
+		paramOrdering = append(paramOrdering, param.Name)
 	}
 
 	plan := api.Plan{
@@ -86,19 +75,23 @@ func serviceFromTemplate(template *templateapi.Template) *api.Service {
 			ServiceBinding: api.ServiceBindings{
 				Create: map[string]*jsschema.Schema{
 					"parameters": {
-						SchemaRef: jsschema.SchemaURL,
-						Type:      []jsschema.PrimitiveType{jsschema.ObjectType},
-						Properties: map[string]*jsschema.Schema{
-							//TODO - when https://github.com/kubernetes-incubator/service-catalog/pull/939 sufficiently progresses, remove this prop
-							templateapi.RequesterUsernameParameterKey: {
-								Title:       requesterUsernameTitle,
-								Description: requesterUsernameDescription,
-								Type:        []jsschema.PrimitiveType{jsschema.StringType},
-							},
-						},
-						Required: []string{},
+						SchemaRef:  jsschema.SchemaURL,
+						Type:       []jsschema.PrimitiveType{jsschema.ObjectType},
+						Properties: map[string]*jsschema.Schema{},
+						Required:   []string{},
 					},
 				},
+			},
+		},
+	}
+
+	// This metadata ensures the template parameters are displayed in the
+	// service catalog in the same order as they are defined in the template.
+	plan.Metadata = make(map[string]interface{})
+	plan.Metadata["schemas"] = api.ParameterSchemas{
+		ServiceInstance: api.ParameterSchema{
+			Create: api.OpenShiftMetadata{
+				OpenShiftFormDefinition: paramOrdering,
 			},
 		},
 	}

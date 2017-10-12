@@ -1,6 +1,9 @@
 package templates
 
 import (
+	"fmt"
+	"time"
+
 	g "github.com/onsi/ginkgo"
 	o "github.com/onsi/gomega"
 	"github.com/pborman/uuid"
@@ -13,12 +16,14 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	kapi "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/test/e2e/framework"
 
 	authorizationapi "github.com/openshift/origin/pkg/authorization/apis/authorization"
 	"github.com/openshift/origin/pkg/cmd/server/bootstrappolicy"
 	routeapi "github.com/openshift/origin/pkg/route/apis/route"
 	templateapi "github.com/openshift/origin/pkg/template/apis/template"
 	templateapiv1 "github.com/openshift/origin/pkg/template/apis/template/v1"
+	"github.com/openshift/origin/pkg/template/client/internalversion"
 	"github.com/openshift/origin/pkg/templateservicebroker/openservicebroker/api"
 	"github.com/openshift/origin/pkg/templateservicebroker/openservicebroker/client"
 	exutil "github.com/openshift/origin/test/extended/util"
@@ -45,23 +50,27 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 	)
 
 	g.BeforeEach(func() {
+		framework.SkipIfProviderIs("gce")
+
+		err := exutil.WaitForBuilderAccount(cli.KubeClient().Core().ServiceAccounts(cli.Namespace()))
+		o.Expect(err).NotTo(o.HaveOccurred())
+
 		brokercli, portForwardCmdClose = EnsureTSB(tsbOC)
 
 		cliUser = &user.DefaultInfo{Name: cli.Username(), Groups: []string{"system:authenticated"}}
-		var err error
 
 		// should have been created before the extended test runs
 		template, err = cli.TemplateClient().Template().Templates("openshift").Get("cakephp-mysql-example", metav1.GetOptions{})
 		o.Expect(err).NotTo(o.HaveOccurred())
 
-		processedtemplate, err = cli.AdminClient().TemplateConfigs("openshift").Create(template)
+		processedtemplate, err = internalversion.NewTemplateProcessorClient(cli.AdminTemplateClient().Template().RESTClient(), "openshift").Process(template)
 		o.Expect(err).NotTo(o.HaveOccurred())
 
 		errs := runtime.DecodeList(processedtemplate.Objects, unstructured.UnstructuredJSONScheme)
 		o.Expect(errs).To(o.BeEmpty())
 
 		// privatetemplate is an additional template in our namespace
-		privatetemplate, err = cli.Client().Templates(cli.Namespace()).Create(&templateapi.Template{
+		privatetemplate, err = cli.TemplateClient().Template().Templates(cli.Namespace()).Create(&templateapi.Template{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "private",
 			},
@@ -69,7 +78,7 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 		o.Expect(err).NotTo(o.HaveOccurred())
 
 		// enable unauthenticated access to the service broker
-		clusterrolebinding, err = cli.AdminClient().ClusterRoleBindings().Create(&authorizationapi.ClusterRoleBinding{
+		clusterrolebinding, err = cli.AdminAuthorizationClient().Authorization().ClusterRoleBindings().Create(&authorizationapi.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: cli.Namespace() + "templateservicebroker-client",
 			},
@@ -88,7 +97,7 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 	})
 
 	g.AfterEach(func() {
-		err := cli.AdminClient().ClusterRoleBindings().Delete(clusterrolebinding.Name)
+		err := cli.AdminAuthorizationClient().Authorization().ClusterRoleBindings().Delete(clusterrolebinding.Name, nil)
 		o.Expect(err).NotTo(o.HaveOccurred())
 
 		// it shouldn't be around, but if it is, clean up the
@@ -131,7 +140,10 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 		o.Expect(err).To(o.HaveOccurred())
 		o.Expect(err.Error()).To(o.ContainSubstring("not found"))
 
-		_, err = brokercli.Provision(context.Background(), cliUser, instanceID, &api.ProvisionRequest{
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+
+		_, err = brokercli.Provision(ctx, cliUser, instanceID, &api.ProvisionRequest{
 			ServiceID: service.ID,
 			PlanID:    plan.ID,
 			Context: api.KubernetesContext{
@@ -142,6 +154,17 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 				"DATABASE_USER": "test",
 			},
 		})
+		if err != nil {
+			templateInstance, err := cli.TemplateClient().Template().TemplateInstances(cli.Namespace()).Get(instanceID, metav1.GetOptions{})
+			if err != nil {
+				fmt.Fprintf(g.GinkgoWriter, "error getting TemplateInstance after failed provision: %v", err)
+			} else {
+				err := dumpObjectReadiness(cli, templateInstance)
+				if err != nil {
+					fmt.Fprintf(g.GinkgoWriter, "error running dumpObjectReadiness: %v", err)
+				}
+			}
+		}
 		o.Expect(err).NotTo(o.HaveOccurred())
 
 		brokerTemplateInstance, err := cli.AdminTemplateClient().Template().BrokerTemplateInstances().Get(instanceID, metav1.GetOptions{})
@@ -164,6 +187,10 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 				Name:      secret.Name,
 				UID:       secret.UID,
 			},
+		}))
+
+		o.Expect(templateInstance.Annotations).To(o.Equal(map[string]string{
+			api.OpenServiceBrokerInstanceExternalID: templateInstance.Name,
 		}))
 
 		o.Expect(templateInstance.Spec).To(o.Equal(templateapi.TemplateInstanceSpec{
@@ -267,7 +294,7 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 		})
 		o.Expect(err).NotTo(o.HaveOccurred())
 
-		bindroute, err := cli.Client().Routes(cli.Namespace()).Create(&routeapi.Route{
+		bindroute, err := cli.RouteClient().Route().Routes(cli.Namespace()).Create(&routeapi.Route{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "bindroute",
 				Annotations: map[string]string{
@@ -316,7 +343,7 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 		err = cli.KubeClient().CoreV1().Services(cli.Namespace()).Delete(bindservice.Name, nil)
 		o.Expect(err).NotTo(o.HaveOccurred())
 
-		err = cli.Client().Routes(cli.Namespace()).Delete(bindroute.Name)
+		err = cli.RouteClient().Route().Routes(cli.Namespace()).Delete(bindroute.Name, nil)
 		o.Expect(err).NotTo(o.HaveOccurred())
 	}
 
@@ -353,11 +380,23 @@ var _ = g.Describe("[Conformance][templates] templateservicebroker end-to-end te
 		o.Expect(kerrors.IsNotFound(err)).To(o.BeTrue())
 	}
 
-	g.It("should pass an end-to-end test", func() {
-		catalog()
-		provision()
-		bind()
-		unbind()
-		deprovision()
+	g.Context("", func() {
+		g.AfterEach(func() {
+			if g.CurrentGinkgoTestDescription().Failed {
+				exutil.DumpPodStates(tsbOC)
+				exutil.DumpPodLogsStartingWith("", tsbOC)
+
+				exutil.DumpPodStates(cli)
+				exutil.DumpPodLogsStartingWith("", cli)
+			}
+		})
+
+		g.It("should pass an end-to-end test", func() {
+			catalog()
+			provision()
+			bind()
+			unbind()
+			deprovision()
+		})
 	})
 })

@@ -5,27 +5,28 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 
 	"github.com/pborman/uuid"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/features"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	kapi "k8s.io/kubernetes/pkg/api"
 	kclientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 
 	"github.com/openshift/origin/pkg/auth/server/session"
-	"github.com/openshift/origin/pkg/auth/server/tokenrequest"
-	osclient "github.com/openshift/origin/pkg/client"
 	configapi "github.com/openshift/origin/pkg/cmd/server/api"
 	"github.com/openshift/origin/pkg/cmd/server/api/latest"
 	oauthapi "github.com/openshift/origin/pkg/oauth/apis/oauth"
 	oauthclient "github.com/openshift/origin/pkg/oauth/generated/internalclientset/typed/oauth/internalversion"
 	oauthutil "github.com/openshift/origin/pkg/oauth/util"
+	routeclient "github.com/openshift/origin/pkg/route/generated/internalclientset"
 	userclient "github.com/openshift/origin/pkg/user/generated/internalclientset/typed/user/internalversion"
 )
 
@@ -40,8 +41,11 @@ type OAuthServerConfig struct {
 	// KubeClient is kubeclient with enough permission for the auth API
 	KubeClient kclientset.Interface
 
-	// OpenShiftClient is osclient with enough permission for the auth API
-	OpenShiftClient osclient.Interface
+	// EventsClient is for creating user events
+	EventsClient corev1.EventInterface
+
+	// RouteClient provides a client for OpenShift routes API.
+	RouteClient routeclient.Interface
 
 	UserClient                userclient.UserResourceInterface
 	IdentityClient            userclient.IdentityInterface
@@ -80,11 +84,16 @@ func NewOAuthServerConfig(oauthConfig configapi.OAuthConfig, userClientConfig *r
 	if err != nil {
 		return nil, err
 	}
+	eventsClient, err := corev1.NewForConfig(userClientConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	ret := &OAuthServerConfig{
 		GenericConfig:                  genericConfig,
 		Options:                        oauthConfig,
 		SessionAuth:                    sessionAuth,
+		EventsClient:                   eventsClient.Events(""),
 		IdentityClient:                 userClient.Identities(),
 		UserClient:                     userClient.Users(),
 		UserIdentityMappingClient:      userClient.UserIdentityMappings(),
@@ -180,15 +189,18 @@ func (c completedOAuthServerConfig) New(delegationTarget genericapiserver.Delega
 }
 
 func (c *OAuthServerConfig) buildHandlerChainForOAuth(startingHandler http.Handler, genericConfig *genericapiserver.Config) http.Handler {
-	handler, err := c.WithOAuth(startingHandler)
+	handler, err := c.WithOAuth(startingHandler, genericConfig.RequestContextMapper)
 	if err != nil {
 		// the existing errors all cause the server to die anyway
 		panic(err)
 	}
+	if utilfeature.DefaultFeatureGate.Enabled(features.AdvancedAuditing) {
+		handler = genericapifilters.WithAudit(handler, genericConfig.RequestContextMapper, genericConfig.AuditBackend, genericConfig.AuditPolicyChecker, genericConfig.LongRunningFunc)
+	}
 
 	handler = genericfilters.WithMaxInFlightLimit(handler, genericConfig.MaxRequestsInFlight, genericConfig.MaxMutatingRequestsInFlight, genericConfig.RequestContextMapper, genericConfig.LongRunningFunc)
 	handler = genericfilters.WithCORS(handler, genericConfig.CorsAllowedOriginList, nil, nil, nil, "true")
-	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, genericConfig.RequestContextMapper, genericConfig.LongRunningFunc)
+	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, genericConfig.RequestContextMapper, genericConfig.LongRunningFunc, genericConfig.RequestTimeout)
 	handler = genericapifilters.WithRequestInfo(handler, genericapiserver.NewRequestInfoResolver(genericConfig), genericConfig.RequestContextMapper)
 	handler = apirequest.WithRequestContext(handler, genericConfig.RequestContextMapper)
 	handler = genericfilters.WithPanicRecovery(handler)
@@ -214,7 +226,7 @@ func (c *OAuthServerConfig) EnsureBootstrapOAuthClients(context genericapiserver
 		ObjectMeta:            metav1.ObjectMeta{Name: OpenShiftBrowserClientID},
 		Secret:                uuid.New(),
 		RespondWithChallenges: false,
-		RedirectURIs:          []string{c.Options.MasterPublicURL + path.Join(oauthutil.OpenShiftOAuthAPIPrefix, tokenrequest.DisplayTokenEndpoint)},
+		RedirectURIs:          []string{oauthutil.OpenShiftOAuthTokenDisplayURL(c.Options.MasterPublicURL)},
 		GrantMethod:           oauthapi.GrantHandlerAuto,
 	}
 	if err := ensureOAuthClient(browserClient, c.OAuthClientClient, true, true); err != nil {
@@ -225,7 +237,7 @@ func (c *OAuthServerConfig) EnsureBootstrapOAuthClients(context genericapiserver
 		ObjectMeta:            metav1.ObjectMeta{Name: OpenShiftCLIClientID},
 		Secret:                "",
 		RespondWithChallenges: true,
-		RedirectURIs:          []string{c.Options.MasterPublicURL + path.Join(oauthutil.OpenShiftOAuthAPIPrefix, tokenrequest.ImplicitTokenEndpoint)},
+		RedirectURIs:          []string{oauthutil.OpenShiftOAuthTokenImplicitURL(c.Options.MasterPublicURL)},
 		GrantMethod:           oauthapi.GrantHandlerAuto,
 	}
 	if err := ensureOAuthClient(cliClient, c.OAuthClientClient, false, false); err != nil {

@@ -1,3 +1,5 @@
+// +build linux
+
 package node
 
 import (
@@ -70,25 +72,28 @@ func (np *networkPolicyPlugin) Name() string {
 	return network.NetworkPolicyPluginName
 }
 
+func (np *networkPolicyPlugin) SupportsVNIDs() bool {
+	return true
+}
+
 func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 	np.node = node
 	np.kubeInformers = node.kubeInformers
-	np.vnids = newNodeVNIDMap(np, node.osClient)
+	np.vnids = newNodeVNIDMap(np, node.networkClient)
 	if err := np.vnids.Start(); err != nil {
 		return err
 	}
 
 	otx := node.oc.NewTransaction()
-	otx.AddFlow("table=21, priority=200, ip, nw_dst=%s, actions=ct(commit,table=30)", np.node.networkInfo.ClusterNetwork.String())
+	for _, cn := range np.node.networkInfo.ClusterNetworks {
+		otx.AddFlow("table=21, priority=200, ip, nw_dst=%s, actions=ct(commit,table=30)", cn.ClusterCIDR.String())
+	}
 	otx.AddFlow("table=80, priority=200, ip, ct_state=+rpl, actions=output:NXM_NX_REG2[]")
 	if err := otx.EndTransaction(); err != nil {
 		return err
 	}
 
 	if err := np.initNamespaces(); err != nil {
-		return err
-	}
-	if err := np.node.SetupEgressNetworkPolicy(); err != nil {
 		return err
 	}
 

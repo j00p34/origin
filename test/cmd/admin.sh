@@ -116,7 +116,7 @@ os::test::junit::declare_suite_end
 
 os::test::junit::declare_suite_start "cmd/admin/groups"
 os::cmd::expect_success_and_text 'oc adm groups new shortoutputgroup -o name' 'groups/shortoutputgroup'
-os::cmd::expect_failure_and_text 'oc adm groups new shortoutputgroup' 'groups "shortoutputgroup" already exists'
+os::cmd::expect_failure_and_text 'oc adm groups new shortoutputgroup' 'groups.user.openshift.io "shortoutputgroup" already exists'
 os::cmd::expect_failure_and_text 'oc adm groups new errorgroup -o blah' 'error: output format "blah" not recognized'
 os::cmd::expect_failure_and_text 'oc get groups/errorgroup' 'groups "errorgroup" not found'
 os::cmd::expect_success_and_text 'oc adm groups new group1 foo bar' 'group1.*foo, bar'
@@ -177,6 +177,10 @@ os::cmd::expect_success_and_not_text 'oc get scc/privileged -o yaml' "system:ser
 os::cmd::expect_success 'oc adm policy remove-scc-from-group privileged fake-group'
 os::cmd::expect_success_and_not_text 'oc get scc/privileged -o yaml' 'fake-group'
 echo "admin-scc: ok"
+os::test::junit::declare_suite_end
+
+os::test::junit::declare_suite_start "cmd/admin/overwrite-policy"
+os::cmd::expect_failure_and_text 'oc adm overwrite-policy' 'error: the server does not support legacy policy resources'
 os::test::junit::declare_suite_end
 
 os::test::junit::declare_suite_start "cmd/admin/reconcile-cluster-roles"
@@ -517,8 +521,8 @@ os::test::junit::declare_suite_start "cmd/admin/images"
 
 # import image and check its information
 os::cmd::expect_success "oc create -f ${OS_ROOT}/test/testdata/stable-busybox.yaml"
-os::cmd::expect_success_and_text "oc adm top images" "sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6\W+default/busybox \(latest\)\W+<none>\W+<none>\W+yes\W+0\.65MiB"
-os::cmd::expect_success_and_text "oc adm top imagestreams" "default/busybox\W+0.65MiB\W+1\W+1"
+os::cmd::expect_success_and_text "oc adm top images" "sha256:a59906e33509d14c036c8678d687bd4eec81ed7c4b8ce907b888c607f6a1e0e6\W+default/busybox \(latest\)\W+<none>\W+<none>\W+yes\W+653\.4 KiB"
+os::cmd::expect_success_and_text "oc adm top imagestreams" "default/busybox\W+653\.4 KiB\W+1\W+1"
 os::cmd::expect_success "oc delete is/busybox -n default"
 
 # log in as an image-pruner and test that oc adm prune images works against the atomic binary

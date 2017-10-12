@@ -4,10 +4,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	kapi "k8s.io/kubernetes/pkg/api"
 
+	deployercontroller "github.com/openshift/origin/pkg/apps/controller/deployer"
+	deployconfigcontroller "github.com/openshift/origin/pkg/apps/controller/deploymentconfig"
 	"github.com/openshift/origin/pkg/cmd/server/bootstrappolicy"
-	deployercontroller "github.com/openshift/origin/pkg/deploy/controller/deployer"
-	deployconfigcontroller "github.com/openshift/origin/pkg/deploy/controller/deploymentconfig"
-	triggercontroller "github.com/openshift/origin/pkg/deploy/controller/generictrigger"
 )
 
 type DeployerControllerConfig struct {
@@ -18,10 +17,6 @@ type DeployerControllerConfig struct {
 }
 
 type DeploymentConfigControllerConfig struct {
-	Codec runtime.Codec
-}
-
-type DeploymentTriggerControllerConfig struct {
 	Codec runtime.Codec
 }
 
@@ -53,24 +48,10 @@ func (c *DeploymentConfigControllerConfig) RunController(ctx ControllerContext) 
 	}
 
 	go deployconfigcontroller.NewDeploymentConfigController(
-		ctx.AppInformers.Apps().InternalVersion().DeploymentConfigs().Informer(),
+		ctx.AppInformers.Apps().InternalVersion().DeploymentConfigs(),
 		ctx.ExternalKubeInformers.Core().V1().ReplicationControllers(),
 		ctx.ClientBuilder.OpenshiftInternalAppsClientOrDie(saName),
 		kubeClient,
-		c.Codec,
-	).Run(5, ctx.Stop)
-
-	return true, nil
-}
-
-func (c *DeploymentTriggerControllerConfig) RunController(ctx ControllerContext) (bool, error) {
-	saName := bootstrappolicy.InfraDeploymentTriggerControllerServiceAccountName
-
-	go triggercontroller.NewDeploymentTriggerController(
-		ctx.AppInformers.Apps().InternalVersion().DeploymentConfigs().Informer(),
-		ctx.ExternalKubeInformers.Core().V1().ReplicationControllers().Informer(),
-		ctx.ImageInformers.Image().InternalVersion().ImageStreams().Informer(),
-		ctx.ClientBuilder.OpenshiftInternalAppsClientOrDie(saName),
 		c.Codec,
 	).Run(5, ctx.Stop)
 

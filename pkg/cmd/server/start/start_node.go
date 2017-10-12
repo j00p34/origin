@@ -5,15 +5,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/coreos/go-systemd/daemon"
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	kubeletoptions "k8s.io/kubernetes/cmd/kubelet/app/options"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	kcmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 
@@ -22,11 +27,12 @@ import (
 	configapilatest "github.com/openshift/origin/pkg/cmd/server/api/latest"
 	"github.com/openshift/origin/pkg/cmd/server/api/validation"
 	"github.com/openshift/origin/pkg/cmd/server/crypto"
-	kubernetes "github.com/openshift/origin/pkg/cmd/server/kubernetes/node"
+	"github.com/openshift/origin/pkg/cmd/server/kubernetes/network"
+	"github.com/openshift/origin/pkg/cmd/server/kubernetes/node"
+	nodeoptions "github.com/openshift/origin/pkg/cmd/server/kubernetes/node/options"
 	cmdutil "github.com/openshift/origin/pkg/cmd/util"
 	"github.com/openshift/origin/pkg/cmd/util/docker"
 	utilflags "github.com/openshift/origin/pkg/cmd/util/flags"
-	"github.com/openshift/origin/pkg/network"
 	"github.com/openshift/origin/pkg/version"
 )
 
@@ -327,18 +333,93 @@ func (o NodeOptions) IsRunFromConfig() bool {
 	return (len(o.ConfigFile) > 0)
 }
 
+// execKubelet attempts to call execve() for the kubelet with the configuration defined
+// in server passed as flags. If the binary is not the same as the current file and
+// the environment variable OPENSHIFT_ALLOW_UNSUPPORTED_KUBELET is unset, the method
+// will return an error. The returned boolean indicates whether fallback to in-process
+// is allowed.
+func execKubelet(server *kubeletoptions.KubeletServer) (bool, error) {
+	// verify the Kubelet binary to use
+	path := "kubelet"
+	requireSameBinary := true
+	if newPath := os.Getenv("OPENSHIFT_ALLOW_UNSUPPORTED_KUBELET"); len(newPath) > 0 {
+		requireSameBinary = false
+		path = newPath
+	}
+	kubeletPath, err := exec.LookPath(path)
+	if err != nil {
+		return requireSameBinary, err
+	}
+	kubeletFile, err := os.Stat(kubeletPath)
+	if err != nil {
+		return requireSameBinary, err
+	}
+	thisPath, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		return true, err
+	}
+	thisFile, err := os.Stat(thisPath)
+	if err != nil {
+		return true, err
+	}
+	if !os.SameFile(thisFile, kubeletFile) {
+		if requireSameBinary {
+			return true, fmt.Errorf("binary at %q is not the same file as %q, cannot execute", thisPath, kubeletPath)
+		}
+		glog.Warningf("UNSUPPORTED: Executing a different Kubelet than the current binary is not supported: %s", kubeletPath)
+	}
+
+	// convert current settings to flags
+	args := nodeoptions.ToFlags(server)
+	args = append([]string{kubeletPath}, args...)
+	for i := glog.Level(10); i > 0; i-- {
+		if glog.V(i) {
+			args = append(args, fmt.Sprintf("--v=%d", i))
+			break
+		}
+	}
+	for i, s := range os.Args {
+		if s == "--vmodule" {
+			if i+1 < len(os.Args) {
+				args = append(args, fmt.Sprintf("--vmodule=", os.Args[i+1]))
+				break
+			}
+		}
+		if strings.HasPrefix(s, "--vmodule=") {
+			args = append(args, s)
+			break
+		}
+	}
+	glog.V(3).Infof("Exec %s %s", kubeletPath, strings.Join(args, " "))
+	return false, syscall.Exec(kubeletPath, args, os.Environ())
+}
+
 func StartNode(nodeConfig configapi.NodeConfig, components *utilflags.ComponentFlag) error {
-	config, err := kubernetes.BuildKubernetesNodeConfig(nodeConfig, components.Enabled(ComponentProxy), components.Enabled(ComponentDNS) && len(nodeConfig.DNSBindAddress) > 0)
+	server, proxyConfig, err := nodeoptions.Build(nodeConfig)
 	if err != nil {
 		return err
 	}
 
-	if network.IsOpenShiftNetworkPlugin(config.KubeletServer.NetworkPluginName) {
-		// TODO: SDN plugin depends on the Kubelet registering as a Node and doesn't retry cleanly,
-		// and Kubelet also can't start the PodSync loop until the SDN plugin has loaded.
-		if components.Enabled(ComponentKubelet) != components.Enabled(ComponentPlugins) {
-			return fmt.Errorf("the SDN plugin must be run in the same process as the kubelet")
+	// as a step towards decomposing OpenShift into Kubernetes components, perform an execve
+	// to launch the Kubelet instead of loading in-process
+	if components.Calculated().Equal(sets.NewString(ComponentKubelet)) {
+		ok, err := execKubelet(server)
+		if !ok {
+			return err
 		}
+		if err != nil {
+			utilruntime.HandleError(fmt.Errorf("Unable to call exec on kubelet, continuing with normal startup: %v", err))
+		}
+	}
+
+	networkConfig, err := network.New(nodeConfig, server.ClusterDomain, proxyConfig, components.Enabled(ComponentProxy), components.Enabled(ComponentDNS) && len(nodeConfig.DNSBindAddress) > 0)
+	if err != nil {
+		return err
+	}
+
+	config, err := node.New(nodeConfig, server)
+	if err != nil {
+		return err
 	}
 
 	if components.Enabled(ComponentKubelet) {
@@ -346,12 +427,6 @@ func StartNode(nodeConfig configapi.NodeConfig, components *utilflags.ComponentF
 	} else {
 		glog.Infof("Starting node networking %s (%s)", config.KubeletServer.HostnameOverride, version.Get().String())
 	}
-
-	_, kubeClientConfig, err := configapi.GetInternalKubeClient(nodeConfig.MasterKubeConfig, nodeConfig.MasterClientConnectionOverrides)
-	if err != nil {
-		return err
-	}
-	glog.Infof("Connecting to API server %s", kubeClientConfig.Host)
 
 	// preconditions
 	if components.Enabled(ComponentKubelet) {
@@ -365,16 +440,16 @@ func StartNode(nodeConfig configapi.NodeConfig, components *utilflags.ComponentF
 		config.RunKubelet()
 	}
 	if components.Enabled(ComponentPlugins) {
-		config.RunSDN()
+		networkConfig.RunSDN()
 	}
 	if components.Enabled(ComponentProxy) {
-		config.RunProxy()
+		networkConfig.RunProxy()
 	}
-	if components.Enabled(ComponentDNS) && config.DNSServer != nil {
-		config.RunDNS()
+	if components.Enabled(ComponentDNS) && networkConfig.DNSServer != nil {
+		networkConfig.RunDNS()
 	}
 
-	config.InternalKubeInformers.Start(wait.NeverStop)
+	networkConfig.InternalKubeInformers.Start(wait.NeverStop)
 
 	return nil
 }

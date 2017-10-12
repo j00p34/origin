@@ -24,8 +24,8 @@ import (
 	"github.com/openshift/origin/pkg/build/builder/cmd/dockercfg"
 	"github.com/openshift/origin/pkg/build/builder/timing"
 	"github.com/openshift/origin/pkg/build/controller/strategy"
+	buildinternalversion "github.com/openshift/origin/pkg/build/generated/internalclientset/typed/build/internalversion"
 	buildutil "github.com/openshift/origin/pkg/build/util"
-	"github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/generate/git"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,19 +71,19 @@ type S2IBuilder struct {
 	dockerClient DockerClient
 	dockerSocket string
 	build        *buildapi.Build
-	client       client.BuildInterface
+	client       buildinternalversion.BuildResourceInterface
 	cgLimits     *s2iapi.CGroupLimits
 }
 
 // NewS2IBuilder creates a new STIBuilder instance
-func NewS2IBuilder(dockerClient DockerClient, dockerSocket string, buildsClient client.BuildInterface, build *buildapi.Build,
+func NewS2IBuilder(dockerClient DockerClient, dockerSocket string, buildsClient buildinternalversion.BuildResourceInterface, build *buildapi.Build,
 	cgLimits *s2iapi.CGroupLimits) *S2IBuilder {
 	// delegate to internal implementation passing default implementation of builderFactory and validator
 	return newS2IBuilder(dockerClient, dockerSocket, buildsClient, build, runtimeBuilderFactory{}, runtimeConfigValidator{}, cgLimits)
 }
 
 // newS2IBuilder is the internal factory function to create STIBuilder based on parameters. Used for testing.
-func newS2IBuilder(dockerClient DockerClient, dockerSocket string, buildsClient client.BuildInterface, build *buildapi.Build,
+func newS2IBuilder(dockerClient DockerClient, dockerSocket string, buildsClient buildinternalversion.BuildResourceInterface, build *buildapi.Build,
 	builder builderFactory, validator validator, cgLimits *s2iapi.CGroupLimits) *S2IBuilder {
 	// just create instance
 	return &S2IBuilder{
@@ -166,6 +166,11 @@ func (s *S2IBuilder) Build() error {
 		}
 	}
 
+	networkMode, resolvConfHostPath, err := getContainerNetworkConfig()
+	if err != nil {
+		return err
+	}
+
 	config := &s2iapi.Config{
 		// Save some processing time by not cleaning up (the container will go away anyway)
 		PreserveWorkingDir: true,
@@ -182,7 +187,7 @@ func (s *S2IBuilder) Build() error {
 
 		Environment:       buildEnvVars(s.build, sourceInfo),
 		Labels:            s2iBuildLabels(s.build, sourceInfo),
-		DockerNetworkMode: getDockerNetworkMode(),
+		DockerNetworkMode: s2iapi.DockerNetworkMode(networkMode),
 
 		Source:     &s2igit.URL{URL: url.URL{Path: srcDir}, Type: s2igit.URLTypeLocal},
 		ContextDir: contextDir,
@@ -195,6 +200,10 @@ func (s *S2IBuilder) Build() error {
 		CGroupLimits:              s.cgLimits,
 		ScriptDownloadProxyConfig: scriptDownloadProxyConfig,
 		BlockOnBuild:              true,
+	}
+
+	if len(resolvConfHostPath) != 0 {
+		config.BuildVolumes = []string{fmt.Sprintf("%s:/etc/resolv.conf", resolvConfHostPath)}
 	}
 
 	if s.build.Spec.Strategy.SourceStrategy.ForcePull {
@@ -286,10 +295,7 @@ func (s *S2IBuilder) Build() error {
 	}
 
 	cName := containerName("s2i", s.build.Name, s.build.Namespace, "post-commit")
-	startTime = metav1.Now()
-	err = execPostCommitHook(s.dockerClient, s.build.Spec.PostCommit, buildTag, cName)
-
-	timing.RecordNewStep(ctx, buildapi.StagePostCommit, buildapi.StepExecPostCommitHook, startTime, metav1.Now())
+	err = execPostCommitHook(ctx, s.dockerClient, s.build.Spec.PostCommit, buildTag, cName)
 
 	if err != nil {
 		s.build.Status.Phase = buildapi.BuildPhaseFailed
@@ -431,5 +437,5 @@ func copyToVolumeList(artifactsMapping []buildapi.ImageSourcePath) (volumeList s
 }
 
 func convertS2IFailureType(reason s2iapi.StepFailureReason, message s2iapi.StepFailureMessage) (buildapi.StatusReason, string) {
-	return buildapi.StatusReason(reason), fmt.Sprintf("%s", message)
+	return buildapi.StatusReason(reason), string(message)
 }

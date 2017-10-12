@@ -26,7 +26,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	kcmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 
-	"github.com/openshift/origin/pkg/client"
 	configapi "github.com/openshift/origin/pkg/cmd/server/api"
 	cmdutil "github.com/openshift/origin/pkg/cmd/util"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
@@ -115,15 +114,20 @@ var (
 		"jenkins pipeline persistent": "examples/jenkins/jenkins-persistent-template.json",
 		"sample pipeline":             "examples/jenkins/pipeline/samplepipeline.yaml",
 	}
-	// internalTemplateLocations are templates that will be registered in an internal namespace
-	// instead of the openshift namespace.
-	internalTemplateLocations = map[string]string{
-		"logging":                              "examples/logging/logging-deployer.yaml",
+	// serviceCatalogTemplateLocations are templates that will be registered in an internal namespace
+	// when the service catalog is requested
+	serviceCatalogTemplateLocations = map[string]string{
 		"service catalog":                      "examples/service-catalog/service-catalog.yaml",
 		"template service broker apiserver":    "install/templateservicebroker/apiserver-template.yaml",
 		"template service broker rbac":         "install/templateservicebroker/rbac-template.yaml",
 		"template service broker registration": "install/service-catalog-broker-resources/template-service-broker-registration.yaml",
 	}
+	// loggingTemplateLocations are templates that will be registered in an internal namespace
+	// when logging is requested
+	loggingTemplateLocations = map[string]string{
+		"logging": "examples/logging/logging-deployer.yaml",
+	}
+
 	adminTemplateLocations = map[string]string{
 		"prometheus":          "examples/prometheus/prometheus.yaml",
 		"heapster standalone": "examples/heapster/heapster-standalone.yaml",
@@ -405,6 +409,16 @@ func (c *ClientStartConfig) Complete(f *osclientcmd.Factory, cmd *cobra.Command)
 
 	// Import templates
 	c.addTask(conditionalTask("Importing templates", c.ImportTemplates, c.ShouldInitializeData))
+
+	// Import catalog templates
+	c.addTask(conditionalTask("Importing service catalog templates", c.ImportServiceCatalogTemplates, func() bool {
+		return c.ShouldInstallServiceCatalog && c.ShouldInitializeData()
+	}))
+
+	// Import logging templates
+	c.addTask(conditionalTask("Importing logging templates", c.ImportLoggingTemplates, func() bool {
+		return c.ShouldInstallLogging && c.ShouldInitializeData()
+	}))
 
 	// Install logging
 	c.addTask(conditionalTask("Installing logging", c.InstallLogging, func() bool {
@@ -706,12 +720,15 @@ func (c *CommonStartConfig) EnsureHostDirectories(io.Writer) error {
 
 // EnsureDefaultRedirectURIs merges a default URL to an auth client's RedirectURIs array
 func (c *ClientStartConfig) EnsureDefaultRedirectURIs(out io.Writer) error {
-	oc, _, err := c.Clients()
+	factory, err := c.Factory()
 	if err != nil {
-		return nil
+		return err
 	}
-
-	webConsoleOAuth, err := oc.OAuthClients().Get(defaultRedirectClient, metav1.GetOptions{})
+	oauthClient, err := factory.OpenshiftInternalOAuthClient()
+	if err != nil {
+		return err
+	}
+	webConsoleOAuth, err := oauthClient.Oauth().OAuthClients().Get(defaultRedirectClient, metav1.GetOptions{})
 	if err != nil {
 		if kerrors.IsNotFound(err) {
 			fmt.Fprintf(out, "Unable to find OAuthClient %q\n", defaultRedirectClient)
@@ -733,7 +750,7 @@ func (c *ClientStartConfig) EnsureDefaultRedirectURIs(out io.Writer) error {
 
 	webConsoleOAuth.RedirectURIs = append(webConsoleOAuth.RedirectURIs, developmentRedirectURI)
 
-	_, err = oc.OAuthClients().Update(webConsoleOAuth)
+	_, err = oauthClient.Oauth().OAuthClients().Update(webConsoleOAuth)
 	if err != nil {
 		// announce error without interrupting remaining tasks
 		suggestedCmd := fmt.Sprintf("oc patch %s/%s -p '{%q:[%q]}'", "oauthclient", defaultRedirectClient, "redirectURIs", developmentRedirectURI)
@@ -870,7 +887,19 @@ func (c *ClientStartConfig) StartOpenShift(out io.Writer) error {
 	}()
 
 	// Setup persistent storage
-	osClient, kClient, err := c.Clients()
+	_, kClient, err := c.Clients()
+	if err != nil {
+		return err
+	}
+	factory, err := c.Factory()
+	if err != nil {
+		return err
+	}
+	authorizationClient, err := factory.OpenshiftInternalAuthorizationClient()
+	if err != nil {
+		return err
+	}
+	securityClient, err := factory.OpenshiftInternalSecurityClient()
 	if err != nil {
 		return err
 	}
@@ -881,7 +910,7 @@ func (c *ClientStartConfig) StartOpenShift(out io.Writer) error {
 		return err
 	}
 
-	err = c.OpenShiftHelper().SetupPersistentStorage(osClient, kClient, c.HostPersistentVolumesDir)
+	err = c.OpenShiftHelper().SetupPersistentStorage(authorizationClient.Authorization(), kClient, securityClient, c.HostPersistentVolumesDir)
 	if err != nil {
 		return err
 	}
@@ -950,15 +979,28 @@ func (c *ClientStartConfig) ImportTemplates(out io.Writer) error {
 	if err := c.importObjects(out, openshift.OpenshiftNamespace, templateLocations); err != nil {
 		return err
 	}
-	if err := c.importObjects(out, openshift.OpenshiftInfraNamespace, internalTemplateLocations); err != nil {
-		return err
-	}
 	version, err := c.OpenShiftHelper().ServerVersion()
 	if err != nil {
 		return err
 	}
 	if shouldImportAdminTemplates(version) {
 		return c.importObjects(out, "kube-system", adminTemplateLocations)
+	}
+	return nil
+}
+
+// ImportServiceCatalogTemplates imports service catalog templates into the server
+func (c *ClientStartConfig) ImportServiceCatalogTemplates(out io.Writer) error {
+	if err := c.importObjects(out, openshift.OpenshiftInfraNamespace, serviceCatalogTemplateLocations); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ImportLoggingTemplates imports service catalog templates into the server
+func (c *ClientStartConfig) ImportLoggingTemplates(out io.Writer) error {
+	if err := c.importObjects(out, openshift.OpenshiftInfraNamespace, loggingTemplateLocations); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1182,16 +1224,17 @@ func (c *ClientStartConfig) Factory() (*clientcmd.Factory, error) {
 }
 
 // Clients returns clients for OpenShift and Kube
-func (c *ClientStartConfig) Clients() (*client.Client, kclientset.Interface, error) {
+// FIXME: Refactor this to KubernetesInternal() call.
+func (c *ClientStartConfig) Clients() (interface{}, kclientset.Interface, error) {
 	f, err := c.Factory()
 	if err != nil {
 		return nil, nil, err
 	}
-	oc, kcset, err := f.Clients()
+	kcset, err := f.ClientSet()
 	if err != nil {
 		return nil, nil, err
 	}
-	return oc, kcset, nil
+	return nil, kcset, nil
 }
 
 // OpenShiftHelper returns a helper object to work with OpenShift on the server

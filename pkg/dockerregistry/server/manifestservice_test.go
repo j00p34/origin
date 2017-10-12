@@ -12,6 +12,7 @@ import (
 
 	registryclient "github.com/openshift/origin/pkg/dockerregistry/server/client"
 	"github.com/openshift/origin/pkg/dockerregistry/testutil"
+	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 )
 
 func TestManifestServiceExists(t *testing.T) {
@@ -19,18 +20,18 @@ func TestManifestServiceExists(t *testing.T) {
 	repo := "app"
 	tag := "latest"
 
-	fos, client, imageClient := testutil.NewFakeOpenShiftWithClient()
+	fos, imageClient := testutil.NewFakeOpenShiftWithClient()
 	testImage := testutil.AddRandomImage(t, fos, namespace, repo, tag)
 
 	r := newTestRepository(t, namespace, repo, testRepositoryOptions{
-		client: registryclient.NewFakeRegistryAPIClient(client, nil, imageClient),
+		client: registryclient.NewFakeRegistryAPIClient(nil, imageClient),
 	})
 
 	ms := &manifestService{
 		ctx:           context.Background(),
 		repo:          r,
 		manifests:     nil,
-		acceptschema2: r.acceptschema2,
+		acceptschema2: r.config.acceptSchema2,
 	}
 
 	ok, err := ms.Exists(context.Background(), digest.Digest(testImage.Name))
@@ -50,8 +51,9 @@ func TestManifestServiceGetDoesntChangeDockerImageReference(t *testing.T) {
 	namespace := "user"
 	repo := "app"
 	tag := "latest"
+	const img1Manifest = `{"_":"some json to start migration"}`
 
-	fos, client, imageClient := testutil.NewFakeOpenShiftWithClient()
+	fos, imageClient := testutil.NewFakeOpenShiftWithClient()
 
 	testImage, err := testutil.CreateRandomImage(namespace, repo)
 	if err != nil {
@@ -60,7 +62,7 @@ func TestManifestServiceGetDoesntChangeDockerImageReference(t *testing.T) {
 
 	img1 := *testImage
 	img1.DockerImageReference = "1"
-	img1.DockerImageManifest = `{"_":"some json to start migration"}`
+	img1.DockerImageManifest = img1Manifest
 	testutil.AddUntaggedImage(t, fos, &img1)
 
 	img2 := *testImage
@@ -77,7 +79,7 @@ func TestManifestServiceGetDoesntChangeDockerImageReference(t *testing.T) {
 	}
 
 	r := newTestRepository(t, namespace, repo, testRepositoryOptions{
-		client: registryclient.NewFakeRegistryAPIClient(client, nil, imageClient),
+		client: registryclient.NewFakeRegistryAPIClient(nil, imageClient),
 	})
 
 	ms := &manifestService{
@@ -86,7 +88,7 @@ func TestManifestServiceGetDoesntChangeDockerImageReference(t *testing.T) {
 		manifests: newTestManifestService(repo, map[digest.Digest]distribution.Manifest{
 			digest.Digest(testImage.Name): &schema2.DeserializedManifest{},
 		}),
-		acceptschema2: r.acceptschema2,
+		acceptschema2: r.config.acceptSchema2,
 	}
 
 	_, err = ms.Get(context.Background(), digest.Digest(testImage.Name))
@@ -100,7 +102,10 @@ func TestManifestServiceGetDoesntChangeDockerImageReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if img.DockerImageManifest != "" {
+	if img.Annotations[imageapi.ImageManifestBlobStoredAnnotation] != "true" {
+		t.Errorf("missing %q annotation on image", imageapi.ImageManifestBlobStoredAnnotation)
+	}
+	if img.DockerImageManifest != img1Manifest {
 		t.Errorf("image doesn't migrated, img.DockerImageManifest: want %q, got %q", "", img.DockerImageManifest)
 	}
 	if img.DockerImageReference != "1" {
@@ -113,16 +118,16 @@ func TestManifestServicePut(t *testing.T) {
 	repo := "app"
 	repoName := fmt.Sprintf("%s/%s", namespace, repo)
 
-	_, client, imageClient := testutil.NewFakeOpenShiftWithClient()
+	_, imageClient := testutil.NewFakeOpenShiftWithClient()
 
-	bs := newTestBlobStore(map[digest.Digest][]byte{
+	bs := newTestBlobStore(nil, blobContents{
 		"test:1": []byte("{}"),
 	})
 
 	tms := newTestManifestService(repoName, nil)
 
 	r := newTestRepository(t, namespace, repo, testRepositoryOptions{
-		client: registryclient.NewFakeRegistryAPIClient(client, nil, imageClient),
+		client: registryclient.NewFakeRegistryAPIClient(nil, imageClient),
 		blobs:  bs,
 	})
 
@@ -130,12 +135,7 @@ func TestManifestServicePut(t *testing.T) {
 		ctx:           context.Background(),
 		repo:          r,
 		manifests:     tms,
-		acceptschema2: r.acceptschema2,
-	}
-
-	// TODO(dmage): eliminate global variables
-	quotaEnforcing = &quotaEnforcingConfig{
-		enforcementEnabled: false,
+		acceptschema2: r.config.acceptSchema2,
 	}
 
 	manifest := &schema2.DeserializedManifest{
@@ -146,7 +146,7 @@ func TestManifestServicePut(t *testing.T) {
 		},
 	}
 
-	osclient, err := registryclient.NewFakeRegistryClient(client, imageClient).Client()
+	osclient, err := registryclient.NewFakeRegistryClient(imageClient).Client()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestManifestServicePut(t *testing.T) {
 
 	// recreate repository to reset cached image stream
 	r = newTestRepository(t, namespace, repo, testRepositoryOptions{
-		client: registryclient.NewFakeRegistryAPIClient(client, nil, imageClient),
+		client: registryclient.NewFakeRegistryAPIClient(nil, imageClient),
 		blobs:  bs,
 	})
 
@@ -169,7 +169,7 @@ func TestManifestServicePut(t *testing.T) {
 		ctx:           context.Background(),
 		repo:          r,
 		manifests:     tms,
-		acceptschema2: r.acceptschema2,
+		acceptschema2: r.config.acceptSchema2,
 	}
 
 	ctx = context.Background()

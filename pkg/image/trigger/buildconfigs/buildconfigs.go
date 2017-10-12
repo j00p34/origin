@@ -1,9 +1,7 @@
 package buildconfigs
 
 import (
-	"fmt"
 	"reflect"
-	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
@@ -11,7 +9,6 @@ import (
 
 	"github.com/golang/glog"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
-	buildutil "github.com/openshift/origin/pkg/build/util"
 	triggerapi "github.com/openshift/origin/pkg/image/apis/image/v1/trigger"
 	"github.com/openshift/origin/pkg/image/trigger"
 )
@@ -32,7 +29,7 @@ func calculateBuildConfigTriggers(bc *buildapi.BuildConfig) []triggerapi.ObjectF
 			from = t.ImageChange.From
 			fieldPath = "spec.triggers"
 		} else {
-			from = buildutil.GetInputReference(bc.Spec.Strategy)
+			from = buildapi.GetInputReference(bc.Spec.Strategy)
 			fieldPath = "spec.strategy.*.from"
 		}
 		if from == nil || from.Kind != "ImageStreamTag" || len(from.Name) == 0 {
@@ -132,7 +129,7 @@ func (r *BuildConfigReactor) ImageChanged(obj interface{}, tagRetriever trigger.
 		if p.From != nil {
 			from = p.From
 		} else {
-			from = buildutil.GetInputReference(bc.Spec.Strategy)
+			from = buildapi.GetInputReference(bc.Spec.Strategy)
 		}
 		namespace := from.Namespace
 		if len(namespace) == 0 {
@@ -198,16 +195,4 @@ func (r *BuildConfigReactor) ImageChanged(obj interface{}, tagRetriever trigger.
 	glog.V(4).Infof("Requesting build for BuildConfig based on image triggers %s/%s: %#v", bc.Namespace, bc.Name, request)
 	_, err := r.Instantiator.Instantiate(bc.Namespace, request)
 	return err
-}
-
-func printTriggers(triggers []buildapi.BuildTriggerPolicy) string {
-	var values []string
-	for _, t := range triggers {
-		if t.ImageChange.From != nil {
-			values = append(values, fmt.Sprintf("[from=%s last=%s]", t.ImageChange.From.Name, t.ImageChange.LastTriggeredImageID))
-		} else {
-			values = append(values, fmt.Sprintf("[from=* last=%s]", t.ImageChange.LastTriggeredImageID))
-		}
-	}
-	return strings.Join(values, ", ")
 }

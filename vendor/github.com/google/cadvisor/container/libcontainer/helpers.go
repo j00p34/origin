@@ -99,7 +99,7 @@ func GetStats(cgroupManager cgroups.Manager, rootFs string, pid int, ignoreMetri
 	if !ignoreMetrics.Has(container.NetworkUsageMetrics) {
 		netStats, err := networkStatsFromProc(rootFs, pid)
 		if err != nil {
-			glog.V(2).Infof("Unable to get network stats from pid %d: %v", pid, err)
+			glog.V(4).Infof("Unable to get network stats from pid %d: %v", pid, err)
 		} else {
 			stats.Network.Interfaces = append(stats.Network.Interfaces, netStats...)
 		}
@@ -107,14 +107,14 @@ func GetStats(cgroupManager cgroups.Manager, rootFs string, pid int, ignoreMetri
 	if !ignoreMetrics.Has(container.NetworkTcpUsageMetrics) {
 		t, err := tcpStatsFromProc(rootFs, pid, "net/tcp")
 		if err != nil {
-			glog.V(2).Infof("Unable to get tcp stats from pid %d: %v", pid, err)
+			glog.V(4).Infof("Unable to get tcp stats from pid %d: %v", pid, err)
 		} else {
 			stats.Network.Tcp = t
 		}
 
 		t6, err := tcpStatsFromProc(rootFs, pid, "net/tcp6")
 		if err != nil {
-			glog.V(2).Infof("Unable to get tcp6 stats from pid %d: %v", pid, err)
+			glog.V(4).Infof("Unable to get tcp6 stats from pid %d: %v", pid, err)
 		} else {
 			stats.Network.Tcp6 = t6
 		}
@@ -122,14 +122,14 @@ func GetStats(cgroupManager cgroups.Manager, rootFs string, pid int, ignoreMetri
 	if !ignoreMetrics.Has(container.NetworkUdpUsageMetrics) {
 		u, err := udpStatsFromProc(rootFs, pid, "net/udp")
 		if err != nil {
-			glog.V(2).Infof("Unable to get udp stats from pid %d: %v", pid, err)
+			glog.V(4).Infof("Unable to get udp stats from pid %d: %v", pid, err)
 		} else {
 			stats.Network.Udp = u
 		}
 
 		u6, err := udpStatsFromProc(rootFs, pid, "net/udp6")
 		if err != nil {
-			glog.V(2).Infof("Unable to get udp6 stats from pid %d: %v", pid, err)
+			glog.V(4).Infof("Unable to get udp6 stats from pid %d: %v", pid, err)
 		} else {
 			stats.Network.Udp6 = u6
 		}
@@ -466,8 +466,14 @@ func setMemoryStats(s *cgroups.Stats, ret *info.ContainerStats) {
 	ret.Memory.Usage = s.MemoryStats.Usage.Usage
 	ret.Memory.Failcnt = s.MemoryStats.Usage.Failcnt
 	ret.Memory.Cache = s.MemoryStats.Stats["cache"]
-	ret.Memory.RSS = s.MemoryStats.Stats["rss"]
-	ret.Memory.Swap = s.MemoryStats.Stats["swap"]
+
+	if s.MemoryStats.UseHierarchy {
+		ret.Memory.RSS = s.MemoryStats.Stats["total_rss"]
+		ret.Memory.Swap = s.MemoryStats.Stats["total_swap"]
+	} else {
+		ret.Memory.RSS = s.MemoryStats.Stats["rss"]
+		ret.Memory.Swap = s.MemoryStats.Stats["swap"]
+	}
 	if v, ok := s.MemoryStats.Stats["pgfault"]; ok {
 		ret.Memory.ContainerData.Pgfault = v
 		ret.Memory.HierarchicalData.Pgfault = v

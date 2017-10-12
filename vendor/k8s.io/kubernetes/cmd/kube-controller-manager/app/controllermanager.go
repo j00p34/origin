@@ -130,27 +130,29 @@ func Run(s *options.CMServer) error {
 	}
 	leaderElectionClient := clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "leader-election"))
 
-	go func() {
-		mux := http.NewServeMux()
-		healthz.InstallHandler(mux)
-		if s.EnableProfiling {
-			mux.HandleFunc("/debug/pprof/", pprof.Index)
-			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-			if s.EnableContentionProfiling {
-				goruntime.SetBlockProfileRate(1)
+	if s.Port >= 0 {
+		go func() {
+			mux := http.NewServeMux()
+			healthz.InstallHandler(mux)
+			if s.EnableProfiling {
+				mux.HandleFunc("/debug/pprof/", pprof.Index)
+				mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+				mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+				mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+				if s.EnableContentionProfiling {
+					goruntime.SetBlockProfileRate(1)
+				}
 			}
-		}
-		configz.InstallHandler(mux)
-		mux.Handle("/metrics", prometheus.Handler())
+			configz.InstallHandler(mux)
+			mux.Handle("/metrics", prometheus.Handler())
 
-		server := &http.Server{
-			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(int(s.Port))),
-			Handler: mux,
-		}
-		glog.Fatal(server.ListenAndServe())
-	}()
+			server := &http.Server{
+				Addr:    net.JoinHostPort(s.Address, strconv.Itoa(int(s.Port))),
+				Handler: mux,
+			}
+			glog.Fatal(server.ListenAndServe())
+		}()
+	}
 
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
@@ -182,7 +184,12 @@ func Run(s *options.CMServer) error {
 			glog.Fatalf("error starting controllers: %v", err)
 		}
 
-		ctx.InformerFactory.Start(ctx.Stop)
+		if StartInformers == nil {
+			ctx.InformerFactory.Start(ctx.Stop)
+		} else {
+			StartInformers(ctx.Stop)
+		}
+		close(ctx.InformersStarted)
 
 		select {}
 	}
@@ -243,6 +250,10 @@ type ControllerContext struct {
 
 	// Stop is the stop channel
 	Stop <-chan struct{}
+
+	// InformersStarted is closed after all of the controllers have been initialized and are running.  After this point it is safe,
+	// for an individual controller to start the shared informers. Before it is closed, they should not.
+	InformersStarted chan struct{}
 }
 
 func (c ControllerContext) IsControllerEnabled(name string) bool {
@@ -389,7 +400,7 @@ func GetAvailableResources(clientBuilder controller.ControllerClientBuilder) (ma
 	return allResources, nil
 }
 
-func CreateControllerContext(s *options.CMServer, rootClientBuilder, clientBuilder controller.ControllerClientBuilder, stop <-chan struct{}) (ControllerContext, error) {
+func createControllerContext(s *options.CMServer, rootClientBuilder, clientBuilder controller.ControllerClientBuilder, stop <-chan struct{}) (ControllerContext, error) {
 	versionedClient := rootClientBuilder.ClientOrDie("shared-informers")
 	sharedInformers := informers.NewSharedInformerFactory(versionedClient, ResyncPeriod(s)())
 
@@ -405,6 +416,14 @@ func CreateControllerContext(s *options.CMServer, rootClientBuilder, clientBuild
 	if cloud != nil {
 		// Initialize the cloud provider with a reference to the clientBuilder
 		cloud.Initialize(rootClientBuilder)
+
+		if cloud.HasClusterID() == false {
+			if s.AllowUntaggedCloud == true {
+				glog.Warning("detected a cluster without a ClusterID.  A ClusterID will be required in the future.  Please tag your cluster to avoid any future issues")
+			} else {
+				return ControllerContext{}, fmt.Errorf("no ClusterID Found.  A ClusterID is required for the cloud provider to function properly.  This check can be bypassed by setting the allow-untagged-cloud option")
+			}
+		}
 	}
 
 	ctx := ControllerContext{
@@ -414,6 +433,7 @@ func CreateControllerContext(s *options.CMServer, rootClientBuilder, clientBuild
 		AvailableResources: availableResources,
 		Cloud:              cloud,
 		Stop:               stop,
+		InformersStarted:   make(chan struct{}),
 	}
 	return ctx, nil
 }

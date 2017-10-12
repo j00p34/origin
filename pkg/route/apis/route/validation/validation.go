@@ -16,15 +16,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/api/validation"
 
-	oapi "github.com/openshift/origin/pkg/api"
 	cmdutil "github.com/openshift/origin/pkg/cmd/util"
 	routeapi "github.com/openshift/origin/pkg/route/apis/route"
 )
 
+var ValidateRouteName = validation.NameIsDNSSubdomain
+
 // ValidateRoute tests if required fields in the route are set.
 func ValidateRoute(route *routeapi.Route) field.ErrorList {
 	//ensure meta is set properly
-	result := validation.ValidateObjectMeta(&route.ObjectMeta, true, oapi.GetNameValidationFunc(validation.ValidatePodName), field.NewPath("metadata"))
+	result := validation.ValidateObjectMeta(&route.ObjectMeta, true, ValidateRouteName, field.NewPath("metadata"))
 
 	specPath := field.NewPath("spec")
 

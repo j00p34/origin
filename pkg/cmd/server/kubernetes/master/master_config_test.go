@@ -75,6 +75,7 @@ func TestAPIServerDefaults(t *testing.T) {
 			MaxRequestsInFlight:         400,
 			MaxMutatingRequestsInFlight: 200,
 			MinRequestTimeout:           1800,
+			RequestTimeout:              time.Duration(60) * time.Second,
 		},
 		Admission: &apiserveroptions.AdmissionOptions{
 			PluginNames: []string{"AlwaysAdmit"},
@@ -119,6 +120,9 @@ func TestAPIServerDefaults(t *testing.T) {
 			HTTPTimeout: time.Duration(5) * time.Second,
 		},
 		Audit: &apiserveroptions.AuditOptions{
+			LogOptions: apiserveroptions.AuditLogOptions{
+				Format: "legacy",
+			},
 			WebhookOptions: apiserveroptions.AuditWebhookOptions{
 				Mode: "batch",
 			},
@@ -140,6 +144,9 @@ func TestAPIServerDefaults(t *testing.T) {
 			},
 			TokenFile: &kubeoptions.TokenFileAuthenticationOptions{},
 			WebHook:   &kubeoptions.WebHookAuthenticationOptions{CacheTTL: 2 * time.Minute},
+
+			TokenSuccessCacheTTL: 10 * time.Second,
+			TokenFailureCacheTTL: 0,
 		},
 		Authorization: &kubeoptions.BuiltInAuthorizationOptions{
 			Mode: "AlwaysAllow",

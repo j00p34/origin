@@ -17,12 +17,12 @@ import (
 	kcmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	kprinters "k8s.io/kubernetes/pkg/printers"
 
-	"github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	imageapiv1 "github.com/openshift/origin/pkg/image/apis/image/v1"
 	imageclient "github.com/openshift/origin/pkg/image/generated/internalclientset/typed/image/internalversion"
 	"github.com/openshift/origin/pkg/oc/cli/describe"
+	quotautil "github.com/openshift/origin/pkg/quota/util"
 )
 
 var (
@@ -93,9 +93,8 @@ type ImportImageOptions struct {
 	// helpers
 	out         io.Writer
 	errout      io.Writer
-	osClient    client.Interface
-	isClient    client.ImageStreamInterface
 	imageClient imageclient.ImageInterface
+	isClient    imageclient.ImageStreamInterface
 }
 
 // Complete turns a partially defined ImportImageOptions into a solvent structure
@@ -120,24 +119,15 @@ func (o *ImportImageOptions) Complete(f *clientcmd.Factory, cmd *cobra.Command, 
 	}
 	o.Namespace = namespace
 
-	osClient, _, err := f.Clients()
+	client, err := f.OpenshiftInternalImageClient()
 	if err != nil {
 		return err
 	}
-	o.osClient = osClient
-	o.isClient = osClient.ImageStreams(namespace)
+	o.imageClient = client.Image()
+	o.isClient = client.Image().ImageStreams(namespace)
+
 	o.out = out
 	o.errout = errout
-
-	clientConfig, err := f.ClientConfig()
-	if err != nil {
-		return err
-	}
-	imageClient, err := imageclient.NewForConfig(clientConfig)
-	if err != nil {
-		return err
-	}
-	o.imageClient = imageClient
 
 	return nil
 }
@@ -176,9 +166,10 @@ func (o *ImportImageOptions) Run() error {
 	}
 
 	// Attempt the new, direct import path
-	result, err := o.isClient.Import(isi)
+	result, err := o.imageClient.ImageStreamImports(isi.Namespace).Create(isi)
+	err = TransformUnsupportedError(err)
 	switch {
-	case err == client.ErrImageStreamImportUnsupported:
+	case err == imageapi.ErrImageStreamImportUnsupported:
 	case err != nil:
 		return err
 	default:
@@ -575,11 +566,13 @@ func (o *ImportImageOptions) newImageStreamImportAll(stream *imageapi.ImageStrea
 }
 
 func (o *ImportImageOptions) newImageStreamImportTags(stream *imageapi.ImageStream, tags map[string]string) *imageapi.ImageStreamImport {
-	isi, insecure := o.newImageStreamImport(stream)
+	isi, streamInsecure := o.newImageStreamImport(stream)
 	for tag, from := range tags {
+		insecure := streamInsecure
 		scheduled := o.Scheduled
 		oldTag, ok := stream.Spec.Tags[tag]
 		if ok {
+			insecure = insecure || oldTag.ImportPolicy.Insecure
 			scheduled = scheduled || oldTag.ImportPolicy.Scheduled
 		}
 		isi.Spec.Images = append(isi.Spec.Images, imageapi.ImageImportSpec{
@@ -596,4 +589,28 @@ func (o *ImportImageOptions) newImageStreamImportTags(stream *imageapi.ImageStre
 		})
 	}
 	return isi
+}
+
+// TransformUnsupportedError converts specific error conditions to unsupported
+func TransformUnsupportedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.IsNotFound(err) {
+		status, ok := err.(errors.APIStatus)
+		if !ok {
+			return imageapi.ErrImageStreamImportUnsupported
+		}
+		if status.Status().Details == nil || status.Status().Details.Kind == "" {
+			return imageapi.ErrImageStreamImportUnsupported
+		}
+	}
+	// The ImageStreamImport resource exists in v1.1.1 of origin but is not yet
+	// enabled by policy. A create request will return a Forbidden(403) error.
+	// We want to return ErrImageStreamImportUnsupported to allow fallback behavior
+	// in clients.
+	if errors.IsForbidden(err) && !quotautil.IsErrorQuotaExceeded(err) {
+		return imageapi.ErrImageStreamImportUnsupported
+	}
+	return err
 }

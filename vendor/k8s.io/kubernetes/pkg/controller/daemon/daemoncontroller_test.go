@@ -60,6 +60,7 @@ var (
 var (
 	noScheduleTolerations = []v1.Toleration{{Key: "dedicated", Value: "user1", Effect: "NoSchedule"}}
 	noScheduleTaints      = []v1.Taint{{Key: "dedicated", Value: "user1", Effect: "NoSchedule"}}
+	noExecuteTaints       = []v1.Taint{{Key: "dedicated", Value: "user1", Effect: "NoExecute"}}
 )
 
 var (
@@ -403,6 +404,28 @@ func TestSimpleDaemonSetLaunchesPods(t *testing.T) {
 		addNodes(manager.nodeStore, 0, 5, nil)
 		manager.dsStore.Add(ds)
 		syncAndValidateDaemonSets(t, manager, ds, podControl, 5, 0)
+	}
+}
+
+// Simulate a cluster with 100 nodes, but simulate a limit (like a quota limit)
+// of 10 pods, and verify that the ds doesn't make 100 create calls per sync pass
+func TestSimpleDaemonSetPodCreateErrors(t *testing.T) {
+	for _, strategy := range updateStrategies() {
+		ds := newDaemonSet("foo")
+		ds.Spec.UpdateStrategy = *strategy
+		manager, podControl, _ := newTestController(ds)
+		podControl.FakePodControl.CreateLimit = 10
+		addNodes(manager.nodeStore, 0, podControl.FakePodControl.CreateLimit*10, nil)
+		manager.dsStore.Add(ds)
+		syncAndValidateDaemonSets(t, manager, ds, podControl, podControl.FakePodControl.CreateLimit, 0)
+		expectedLimit := 0
+		for pass := uint8(0); expectedLimit <= podControl.FakePodControl.CreateLimit; pass++ {
+			expectedLimit += controller.SlowStartInitialBatchSize << pass
+		}
+		if podControl.FakePodControl.CreateCallCount > expectedLimit {
+			t.Errorf("Unexpected number of create calls.  Expected <= %d, saw %d\n", podControl.FakePodControl.CreateLimit*2, podControl.FakePodControl.CreateCallCount)
+		}
+
 	}
 }
 
@@ -1079,10 +1102,46 @@ func TestDaemonKillFailedPods(t *testing.T) {
 	}
 }
 
-// DaemonSet should not launch a pod on a tainted node when the pod doesn't tolerate that taint.
-func TestTaintedNodeDaemonDoesNotLaunchUntoleratePod(t *testing.T) {
+// Daemonset should not remove a running pod from a node if the pod doesn't
+// tolerate the nodes NoSchedule taint
+func TestNoScheduleTaintedDoesntEvicitRunningIntolerantPod(t *testing.T) {
 	for _, strategy := range updateStrategies() {
-		ds := newDaemonSet("untolerate")
+		ds := newDaemonSet("intolerant")
+		ds.Spec.UpdateStrategy = *strategy
+		manager, podControl, _ := newTestController(ds)
+
+		node := newNode("tainted", nil)
+		manager.nodeStore.Add(node)
+		setNodeTaint(node, noScheduleTaints)
+		manager.podStore.Add(newPod("keep-running-me", "tainted", simpleDaemonSetLabel, ds))
+		manager.dsStore.Add(ds)
+
+		syncAndValidateDaemonSets(t, manager, ds, podControl, 0, 0)
+	}
+}
+
+// Daemonset should remove a running pod from a node if the pod doesn't
+// tolerate the nodes NoExecute taint
+func TestNoExecuteTaintedDoesEvicitRunningIntolerantPod(t *testing.T) {
+	for _, strategy := range updateStrategies() {
+		ds := newDaemonSet("intolerant")
+		ds.Spec.UpdateStrategy = *strategy
+		manager, podControl, _ := newTestController(ds)
+
+		node := newNode("tainted", nil)
+		manager.nodeStore.Add(node)
+		setNodeTaint(node, noExecuteTaints)
+		manager.podStore.Add(newPod("stop-running-me", "tainted", simpleDaemonSetLabel, ds))
+		manager.dsStore.Add(ds)
+
+		syncAndValidateDaemonSets(t, manager, ds, podControl, 0, 1)
+	}
+}
+
+// DaemonSet should not launch a pod on a tainted node when the pod doesn't tolerate that taint.
+func TestTaintedNodeDaemonDoesNotLaunchIntolerantPod(t *testing.T) {
+	for _, strategy := range updateStrategies() {
+		ds := newDaemonSet("intolerant")
 		ds.Spec.UpdateStrategy = *strategy
 		manager, podControl, _ := newTestController(ds)
 

@@ -23,24 +23,24 @@ import (
 	sc "github.com/kubernetes-incubator/service-catalog/pkg/apis/servicecatalog"
 )
 
-// ValidateBrokerName is the validation function for Broker names.
-var ValidateBrokerName = apivalidation.NameIsDNSSubdomain
+// ValidateClusterServiceBrokerName is the validation function for Broker names.
+var ValidateClusterServiceBrokerName = apivalidation.NameIsDNSSubdomain
 
-// ValidateBroker implements the validation rules for a BrokerResource.
-func ValidateBroker(broker *sc.Broker) field.ErrorList {
+// ValidateClusterServiceBroker implements the validation rules for a BrokerResource.
+func ValidateClusterServiceBroker(broker *sc.ClusterServiceBroker) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs,
 		apivalidation.ValidateObjectMeta(&broker.ObjectMeta,
 			false, /* namespace required */
-			ValidateBrokerName,
+			ValidateClusterServiceBrokerName,
 			field.NewPath("metadata"))...)
 
-	allErrs = append(allErrs, validateBrokerSpec(&broker.Spec, field.NewPath("spec"))...)
+	allErrs = append(allErrs, validateClusterServiceBrokerSpec(&broker.Spec, field.NewPath("spec"))...)
 	return allErrs
 }
 
-func validateBrokerSpec(spec *sc.BrokerSpec, fldPath *field.Path) field.ErrorList {
+func validateClusterServiceBrokerSpec(spec *sc.ClusterServiceBrokerSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if "" == spec.URL {
@@ -98,23 +98,62 @@ func validateBrokerSpec(spec *sc.BrokerSpec, fldPath *field.Path) field.ErrorLis
 				field.Required(fldPath.Child("authInfo"), "auth config is required"),
 			)
 		}
+	}
 
+	if spec.InsecureSkipTLSVerify && len(spec.CABundle) > 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("caBundle"), spec.CABundle, "caBundle cannot be used when insecureSkipTLSVerify is true"))
+	}
+
+	if "" == spec.RelistBehavior {
+		allErrs = append(allErrs,
+			field.Required(fldPath.Child("relistBehavior"),
+				"relist behavior is required"))
+	}
+
+	isValidRelistBehavior := spec.RelistBehavior == sc.ServiceBrokerRelistBehaviorDuration ||
+		spec.RelistBehavior == sc.ServiceBrokerRelistBehaviorManual
+	if !isValidRelistBehavior {
+		errMsg := "relist behavior must be \"Manual\" or \"Duration\""
+		allErrs = append(
+			allErrs,
+			field.Required(fldPath.Child("relistBehavior"), errMsg),
+		)
+	}
+
+	if spec.RelistBehavior == sc.ServiceBrokerRelistBehaviorDuration && spec.RelistDuration == nil {
+		allErrs = append(
+			allErrs,
+			field.Required(fldPath.Child("relistDuration"), "relistDuration must be set if relistBehavior is set to Duration"),
+		)
+	}
+
+	if spec.RelistBehavior == sc.ServiceBrokerRelistBehaviorManual && spec.RelistDuration != nil {
+		allErrs = append(
+			allErrs,
+			field.Required(fldPath.Child("relistDuration"), "relistDuration must not be set if relistBehavior is set to Manual"),
+		)
+	}
+
+	if spec.RelistRequests < 0 {
+		allErrs = append(
+			allErrs,
+			field.Required(fldPath.Child("relistRequests"), "relistDuration must be greater than zero"),
+		)
 	}
 
 	return allErrs
 }
 
-// ValidateBrokerUpdate checks that when changing from an older broker to a newer broker is okay ?
-func ValidateBrokerUpdate(new *sc.Broker, old *sc.Broker) field.ErrorList {
+// ValidateClusterServiceBrokerUpdate checks that when changing from an older broker to a newer broker is okay ?
+func ValidateClusterServiceBrokerUpdate(new *sc.ClusterServiceBroker, old *sc.ClusterServiceBroker) field.ErrorList {
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, ValidateBroker(new)...)
-	allErrs = append(allErrs, ValidateBroker(old)...)
+	allErrs = append(allErrs, ValidateClusterServiceBroker(new)...)
 	return allErrs
 }
 
-// ValidateBrokerStatusUpdate checks that when changing from an older broker to a newer broker is okay.
-func ValidateBrokerStatusUpdate(new *sc.Broker, old *sc.Broker) field.ErrorList {
+// ValidateClusterServiceBrokerStatusUpdate checks that when changing from an older broker to a newer broker is okay.
+func ValidateClusterServiceBrokerStatusUpdate(new *sc.ClusterServiceBroker, old *sc.ClusterServiceBroker) field.ErrorList {
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, ValidateBrokerUpdate(new, old)...)
+	allErrs = append(allErrs, ValidateClusterServiceBrokerUpdate(new, old)...)
 	return allErrs
 }

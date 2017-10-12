@@ -1,3 +1,5 @@
+// +build linux
+
 package master
 
 import (
@@ -21,9 +23,9 @@ import (
 	"github.com/openshift/origin/pkg/util/netutils"
 )
 
-func (master *OsdnMaster) SubnetStartMaster(clusterNetwork *net.IPNet, hostSubnetLength uint32) error {
+func (master *OsdnMaster) SubnetStartMaster(clusterNetworks []common.ClusterNetwork) error {
 	subrange := make([]string, 0)
-	subnets, err := master.osClient.HostSubnets().List(metav1.ListOptions{})
+	subnets, err := master.networkClient.Network().HostSubnets().List(metav1.ListOptions{})
 	if err != nil {
 		log.Errorf("Error in initializing/fetching subnets: %v", err)
 		return err
@@ -37,11 +39,15 @@ func (master *OsdnMaster) SubnetStartMaster(clusterNetwork *net.IPNet, hostSubne
 			log.Infof("Found existing HostSubnet %s", common.HostSubnetToString(&sub))
 		}
 	}
-
-	master.subnetAllocator, err = netutils.NewSubnetAllocator(clusterNetwork.String(), hostSubnetLength, subrange)
-	if err != nil {
-		return err
+	var subnetAllocatorList []*netutils.SubnetAllocator
+	for _, cn := range clusterNetworks {
+		subnetAllocator, err := netutils.NewSubnetAllocator(cn.ClusterCIDR.String(), cn.HostSubnetLength, subrange)
+		if err != nil {
+			return err
+		}
+		subnetAllocatorList = append(subnetAllocatorList, subnetAllocator)
 	}
+	master.subnetAllocatorList = subnetAllocatorList
 
 	master.watchNodes()
 	go utilwait.Forever(master.watchSubnets, 0)
@@ -58,7 +64,7 @@ func (master *OsdnMaster) addNode(nodeName string, nodeIP string, hsAnnotations 
 	}
 
 	// Check if subnet needs to be created or updated
-	sub, err := master.osClient.HostSubnets().Get(nodeName, metav1.GetOptions{})
+	sub, err := master.networkClient.Network().HostSubnets().Get(nodeName, metav1.GetOptions{})
 	if err == nil {
 		if sub.HostIP == nodeIP {
 			return nodeIP, nil
@@ -67,7 +73,7 @@ func (master *OsdnMaster) addNode(nodeName string, nodeIP string, hsAnnotations 
 		} else {
 			// Node IP changed, update old subnet
 			sub.HostIP = nodeIP
-			sub, err = master.osClient.HostSubnets().Update(sub)
+			sub, err = master.networkClient.Network().HostSubnets().Update(sub)
 			if err != nil {
 				return "", fmt.Errorf("error updating subnet %s for node %s: %v", sub.Subnet, nodeName, err)
 			}
@@ -76,34 +82,41 @@ func (master *OsdnMaster) addNode(nodeName string, nodeIP string, hsAnnotations 
 		}
 	}
 
-	// Create new subnet
-	sn, err := master.subnetAllocator.GetNetwork()
-	if err != nil {
-		return "", fmt.Errorf("error allocating network for node %s: %v", nodeName, err)
+	// Create new subet
+	for _, possibleSubnet := range master.subnetAllocatorList {
+		sn, err := possibleSubnet.GetNetwork()
+		if err == netutils.ErrSubnetAllocatorFull {
+			// Current subnet exhausted, check the next one
+			continue
+		} else if err != nil {
+			log.Errorf("Error allocating network from subnet: %v", possibleSubnet)
+			continue
+		} else {
+			sub = &networkapi.HostSubnet{
+				TypeMeta:   metav1.TypeMeta{Kind: "HostSubnet"},
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Annotations: hsAnnotations},
+				Host:       nodeName,
+				HostIP:     nodeIP,
+				Subnet:     sn.String(),
+			}
+			sub, err = master.networkClient.Network().HostSubnets().Create(sub)
+			if err != nil {
+				possibleSubnet.ReleaseNetwork(sn)
+				return "", fmt.Errorf("error allocating node: %s", nodeName)
+			}
+			log.Infof("Created HostSubnet %s", common.HostSubnetToString(sub))
+			return nodeIP, nil
+		}
 	}
-
-	sub = &networkapi.HostSubnet{
-		TypeMeta:   metav1.TypeMeta{Kind: "HostSubnet"},
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Annotations: hsAnnotations},
-		Host:       nodeName,
-		HostIP:     nodeIP,
-		Subnet:     sn.String(),
-	}
-	sub, err = master.osClient.HostSubnets().Create(sub)
-	if err != nil {
-		master.subnetAllocator.ReleaseNetwork(sn)
-		return "", fmt.Errorf("error creating subnet %s for node %s: %v", sn.String(), nodeName, err)
-	}
-	log.Infof("Created HostSubnet %s", common.HostSubnetToString(sub))
-	return nodeIP, nil
+	return "", fmt.Errorf("error allocating network for node %s: %v", nodeName, err)
 }
 
 func (master *OsdnMaster) deleteNode(nodeName string) error {
-	sub, err := master.osClient.HostSubnets().Get(nodeName, metav1.GetOptions{})
+	sub, err := master.networkClient.Network().HostSubnets().Get(nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("error fetching subnet for node %q for deletion: %v", nodeName, err)
 	}
-	err = master.osClient.HostSubnets().Delete(nodeName)
+	err = master.networkClient.Network().HostSubnets().Delete(nodeName, &metav1.DeleteOptions{})
 	if err != nil {
 		return fmt.Errorf("error deleting subnet %v for node %q: %v", sub, nodeName, err)
 	}
@@ -225,7 +238,7 @@ func (master *OsdnMaster) handleDeleteNode(obj interface{}) {
 
 // Watch for all hostsubnet events and if one is found with the right annotation, use the SubnetAllocator to dole a real subnet
 func (master *OsdnMaster) watchSubnets() {
-	common.RunEventQueue(master.osClient, common.HostSubnets, func(delta cache.Delta) error {
+	common.RunEventQueue(master.networkClient.Network().RESTClient(), common.HostSubnets, func(delta cache.Delta) error {
 		hs := delta.Object.(*networkapi.HostSubnet)
 		name := hs.ObjectMeta.Name
 		hostIP := hs.HostIP
@@ -240,7 +253,7 @@ func (master *OsdnMaster) watchSubnets() {
 				// will skip the event if it finds that the hostsubnet has the same host
 				// And we cannot fix the watchSubnets code for node because it will break migration if
 				// nodes are upgraded after the master
-				err := master.osClient.HostSubnets().Delete(name)
+				err := master.networkClient.Network().HostSubnets().Delete(name, &metav1.DeleteOptions{})
 				if err != nil {
 					log.Errorf("Error in deleting annotated subnet from master, name: %s, ip %s: %v", name, hostIP, err)
 					return nil
@@ -268,7 +281,9 @@ func (master *OsdnMaster) watchSubnets() {
 				if err != nil {
 					return fmt.Errorf("error parsing subnet %q for node %q for deletion: %v", subnet, name, err)
 				}
-				master.subnetAllocator.ReleaseNetwork(ipnet)
+				for _, possibleSubnetAllocator := range master.subnetAllocatorList {
+					possibleSubnetAllocator.ReleaseNetwork(ipnet)
+				}
 			}
 		}
 		return nil

@@ -99,6 +99,9 @@ var (
 )
 
 // +genclient
+// +genclient:method=UpdateDetails,verb=update,subresource=details
+// +genclient:method=Clone,verb=create,subresource=clone,input=BuildRequest
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Build encapsulates the inputs needed to produce a new deployable image, as well as
 // the status of the execution and a reference to the Pod which executed the build.
@@ -1000,6 +1003,8 @@ type ImageLabel struct {
 }
 
 // +genclient
+// +genclient:method=Instantiate,verb=create,subresource=instantiate,input=BuildRequest,result=Build
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildConfig is a template which can be used to create new builds.
 type BuildConfig struct {
@@ -1149,6 +1154,8 @@ const (
 	ConfigChangeBuildTriggerType BuildTriggerType = "ConfigChange"
 )
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // BuildList is a collection of Builds.
 type BuildList struct {
 	metav1.TypeMeta
@@ -1157,6 +1164,8 @@ type BuildList struct {
 	// Items is a list of builds
 	Items []Build
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildConfigList is a collection of BuildConfigs.
 type BuildConfigList struct {
@@ -1198,6 +1207,8 @@ type GitRefInfo struct {
 	GitSourceRevision
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 // BuildLog is the (unused) resource associated with the build log redirector
 type BuildLog struct {
 	metav1.TypeMeta
@@ -1218,6 +1229,8 @@ type SourceStrategyOptions struct {
 	// Incremental overrides the source-strategy incremental option in the build config
 	Incremental *bool
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildRequest is the resource used to pass parameters to build generator
 type BuildRequest struct {
@@ -1257,6 +1270,8 @@ type BuildRequest struct {
 	SourceStrategyOptions *SourceStrategyOptions
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
 type BinaryBuildRequestOptions struct {
 	metav1.TypeMeta
 	metav1.ObjectMeta
@@ -1283,6 +1298,8 @@ type BinaryBuildRequestOptions struct {
 	// CommitterEmail of the source control user
 	CommitterEmail string
 }
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // BuildLogOptions is the REST options for a build log
 type BuildLogOptions struct {

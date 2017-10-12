@@ -156,7 +156,7 @@ func makeMounts(pod *v1.Pod, podDir string, container *v1.Container, hostName, h
 
 			hostPath = filepath.Join(hostPath, mount.SubPath)
 
-			if subPathExists, err := util.FileExists(hostPath); err != nil {
+			if subPathExists, err := util.FileOrSymlinkExists(hostPath); err != nil {
 				glog.Errorf("Could not determine if subPath %s exists; will not attempt to change its permissions", hostPath)
 			} else if !subPathExists {
 				// Create the sub path now because if it's auto-created later when referenced, it may have an
@@ -1315,10 +1315,17 @@ func (kl *Kubelet) convertToAPIContainerStatuses(pod *v1.Pod, podStatus *kubecon
 			Image: container.Image,
 			State: defaultWaitingState,
 		}
-		// Apply some values from the old statuses as the default values.
-		if oldStatus, found := oldStatuses[container.Name]; found {
-			status.RestartCount = oldStatus.RestartCount
-			status.LastTerminationState = oldStatus.LastTerminationState
+		oldStatus, found := oldStatuses[container.Name]
+		if found {
+			if isInitContainer && oldStatus.State.Terminated != nil {
+				// Do not update status on terminated init containers as
+				// they be removed at any time.
+				status = &oldStatus
+			} else {
+				// Apply some values from the old statuses as the default values.
+				status.RestartCount = oldStatus.RestartCount
+				status.LastTerminationState = oldStatus.LastTerminationState
+			}
 		}
 		statuses[container.Name] = status
 	}

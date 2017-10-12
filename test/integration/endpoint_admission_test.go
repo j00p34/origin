@@ -57,12 +57,17 @@ func TestEndpointAdmission(t *testing.T) {
 		t.Fatalf("error creating config: %v", err)
 	}
 	defer testserver.CleanupMasterEtcd(t, masterConfig)
-	masterConfig.KubernetesMasterConfig.AdmissionConfig.PluginConfig = map[string]configapi.AdmissionPluginConfig{
+	masterConfig.AdmissionConfig.PluginConfig = map[string]configapi.AdmissionPluginConfig{
 		serviceadmit.RestrictedEndpointsPluginName: {
 			Configuration: &configapi.DefaultAdmissionConfig{},
 		},
 	}
-	masterConfig.NetworkConfig.ClusterNetworkCIDR = clusterNetworkCIDR
+	clusterNetworkConfig := []configapi.ClusterNetworkEntry{
+		{
+			CIDR: clusterNetworkCIDR,
+		},
+	}
+	masterConfig.NetworkConfig.ClusterNetworks = clusterNetworkConfig
 	masterConfig.NetworkConfig.ServiceNetworkCIDR = serviceNetworkCIDR
 
 	kubeConfigFile, err := testserver.StartConfiguredMaster(masterConfig)
@@ -72,10 +77,6 @@ func TestEndpointAdmission(t *testing.T) {
 	clusterAdminKubeClient, err := testutil.GetClusterAdminKubeClient(kubeConfigFile)
 	if err != nil {
 		t.Fatalf("error getting kube client: %v", err)
-	}
-	clusterAdminOSClient, err := testutil.GetClusterAdminClient(kubeConfigFile)
-	if err != nil {
-		t.Fatalf("error getting client: %v", err)
 	}
 	clientConfig, err := testutil.GetClusterAdminClientConfig(kubeConfigFile)
 	if err != nil {
@@ -88,7 +89,7 @@ func TestEndpointAdmission(t *testing.T) {
 	testOne(t, clusterAdminKubeClient, "default", "external", true)
 
 	// Endpoint controller service account
-	_, serviceAccountClient, _, err := testutil.GetClientForServiceAccount(clusterAdminKubeClient, *clientConfig, "kube-system", "endpoint-controller")
+	serviceAccountClient, _, err := testutil.GetClientForServiceAccount(clusterAdminKubeClient, *clientConfig, "kube-system", "endpoint-controller")
 	if err != nil {
 		t.Fatalf("error getting endpoint controller service account: %v", err)
 	}
@@ -97,11 +98,11 @@ func TestEndpointAdmission(t *testing.T) {
 	testOne(t, serviceAccountClient, "default", "external", true)
 
 	// Project admin
-	_, err = testserver.CreateNewProject(clusterAdminOSClient, *clientConfig, "myproject", "myadmin")
+	_, _, err = testserver.CreateNewProject(clientConfig, "myproject", "myadmin")
 	if err != nil {
 		t.Fatalf("error creating project: %v", err)
 	}
-	_, projectAdminClient, _, err := testutil.GetClientForUser(*clientConfig, "myadmin")
+	projectAdminClient, _, err := testutil.GetClientForUser(clientConfig, "myadmin")
 	if err != nil {
 		t.Fatalf("error getting project admin client: %v", err)
 	}

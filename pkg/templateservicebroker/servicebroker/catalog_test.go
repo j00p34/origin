@@ -69,6 +69,20 @@ func TestServiceFromTemplate(t *testing.T) {
 				Description: "Default plan",
 				Free:        true,
 				Bindable:    true,
+				Metadata: map[string]interface{}{
+					"schemas": api.ParameterSchemas{
+						ServiceInstance: api.ParameterSchema{
+							Create: api.OpenShiftMetadata{
+								OpenShiftFormDefinition: []string{
+									"param1",
+									"param2",
+									"param3",
+									"param4",
+								},
+							},
+						},
+					},
+				},
 				Schemas: api.Schema{
 					ServiceInstance: api.ServiceInstances{
 						Create: map[string]*schema.Schema{
@@ -79,12 +93,6 @@ func TestServiceFromTemplate(t *testing.T) {
 									"param1",
 								},
 								Properties: map[string]*schema.Schema{
-									//TODO - when https://github.com/kubernetes-incubator/service-catalog/pull/939 sufficiently progresses, remove this prop
-									"template.openshift.io/requester-username": {
-										Title:       "Template service broker: requester username",
-										Description: "OpenShift user requesting provision/bind",
-										Type:        schema.PrimitiveTypes{schema.StringType},
-									},
 									"param1": {
 										Default: "",
 										Type:    schema.PrimitiveTypes{schema.StringType},
@@ -108,17 +116,10 @@ func TestServiceFromTemplate(t *testing.T) {
 					ServiceBinding: api.ServiceBindings{
 						Create: map[string]*schema.Schema{
 							"parameters": {
-								Type:      schema.PrimitiveTypes{schema.ObjectType},
-								SchemaRef: "http://json-schema.org/draft-04/schema",
-								Required:  []string{},
-								Properties: map[string]*schema.Schema{
-									//TODO - when https://github.com/kubernetes-incubator/service-catalog/pull/939 sufficiently progresses, remove this prop
-									"template.openshift.io/requester-username": {
-										Title:       "Template service broker: requester username",
-										Description: "OpenShift user requesting provision/bind",
-										Type:        schema.PrimitiveTypes{schema.StringType},
-									},
-								},
+								Type:       schema.PrimitiveTypes{schema.ObjectType},
+								SchemaRef:  "http://json-schema.org/draft-04/schema",
+								Required:   []string{},
+								Properties: map[string]*schema.Schema{},
 							},
 						},
 					},

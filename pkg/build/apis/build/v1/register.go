@@ -4,6 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	kapiv1 "k8s.io/kubernetes/pkg/api/v1"
 )
 
 const GroupName = "build.openshift.io"
@@ -13,10 +14,10 @@ var (
 	SchemeGroupVersion       = schema.GroupVersion{Group: GroupName, Version: "v1"}
 	LegacySchemeGroupVersion = schema.GroupVersion{Group: LegacyGroupName, Version: "v1"}
 
-	LegacySchemeBuilder    = runtime.NewSchemeBuilder(addLegacyKnownTypes, addConversionFuncs, RegisterDefaults, addLegacyFieldLabelConversions)
+	LegacySchemeBuilder    = runtime.NewSchemeBuilder(addLegacyKnownTypes, addConversionFuncs, addLegacyFieldSelectorKeyConversions, RegisterDefaults)
 	AddToSchemeInCoreGroup = LegacySchemeBuilder.AddToScheme
 
-	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, addConversionFuncs, RegisterDefaults)
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, addConversionFuncs, addFieldSelectorKeyConversions, RegisterDefaults)
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 
@@ -35,6 +36,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&BuildRequest{},
 		&BuildLogOptions{},
 		&BinaryBuildRequestOptions{},
+		// This is needed for webhooks
+		&kapiv1.PodProxyOptions{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

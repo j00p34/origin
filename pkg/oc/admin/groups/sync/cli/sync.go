@@ -21,7 +21,6 @@ import (
 
 	"github.com/openshift/origin/pkg/auth/ldaputil"
 	"github.com/openshift/origin/pkg/auth/ldaputil/ldapclient"
-	osclient "github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/cmd/server/api"
 	configapilatest "github.com/openshift/origin/pkg/cmd/server/api/latest"
 	"github.com/openshift/origin/pkg/cmd/server/api/validation"
@@ -30,6 +29,7 @@ import (
 	"github.com/openshift/origin/pkg/oc/admin/groups/sync"
 	"github.com/openshift/origin/pkg/oc/admin/groups/sync/interfaces"
 	"github.com/openshift/origin/pkg/oc/admin/groups/sync/syncerror"
+	usertypedclient "github.com/openshift/origin/pkg/user/generated/internalclientset/typed/user/internalversion"
 )
 
 const SyncRecommendedName = "sync"
@@ -95,8 +95,8 @@ type SyncOptions struct {
 	// Confirm determines whether or not to write to OpenShift
 	Confirm bool
 
-	// GroupsInterface is the interface used to interact with OpenShift Group objects
-	GroupInterface osclient.GroupInterface
+	// GroupInterface is the interface used to interact with OpenShift Group objects
+	GroupInterface usertypedclient.GroupInterface
 
 	// Stderr is the writer to write warnings and errors to
 	Stderr io.Writer
@@ -195,12 +195,18 @@ func (o *SyncOptions) Complete(typeArg, whitelistFile, blacklistFile, configFile
 	}
 
 	var err error
+
+	o.Config, err = decodeSyncConfigFromFile(configFile)
+	if err != nil {
+		return err
+	}
+
 	if o.Source == GroupSyncSourceOpenShift {
-		o.Whitelist, err = buildOpenShiftGroupNameList(args, whitelistFile)
+		o.Whitelist, err = buildOpenShiftGroupNameList(args, whitelistFile, o.Config.LDAPGroupUIDToOpenShiftGroupNameMapping)
 		if err != nil {
 			return err
 		}
-		o.Blacklist, err = buildOpenShiftGroupNameList([]string{}, blacklistFile)
+		o.Blacklist, err = buildOpenShiftGroupNameList([]string{}, blacklistFile, o.Config.LDAPGroupUIDToOpenShiftGroupNameMapping)
 		if err != nil {
 			return err
 		}
@@ -215,28 +221,38 @@ func (o *SyncOptions) Complete(typeArg, whitelistFile, blacklistFile, configFile
 		}
 	}
 
-	o.Config, err = decodeSyncConfigFromFile(configFile)
+	userClient, err := f.OpenshiftInternalUserClient()
 	if err != nil {
 		return err
 	}
-
-	osClient, _, err := f.Clients()
-	if err != nil {
-		return err
-	}
-	o.GroupInterface = osClient.Groups()
+	o.GroupInterface = userClient.User().Groups()
 
 	return nil
 }
 
 // buildOpenShiftGroupNameList builds a list of OpenShift names from file and args
-func buildOpenShiftGroupNameList(args []string, file string) ([]string, error) {
+// nameMapping is used to override the OpenShift names built from file and args
+func buildOpenShiftGroupNameList(args []string, file string, nameMapping map[string]string) ([]string, error) {
 	rawList, err := buildNameList(args, file)
 	if err != nil {
 		return nil, err
 	}
 
-	return openshiftGroupNamesOnlyList(rawList)
+	namesList, err := openshiftGroupNamesOnlyList(rawList)
+	if err != nil {
+		return nil, err
+	}
+
+	// override items in namesList if present in mapping
+	if len(nameMapping) > 0 {
+		for i, name := range namesList {
+			if nameOverride, ok := nameMapping[name]; ok {
+				namesList[i] = nameOverride
+			}
+		}
+	}
+
+	return namesList, nil
 }
 
 // buildNameLists builds a list from file and args
@@ -486,7 +502,7 @@ func (o *SyncOptions) GetBlacklist() []string {
 	return o.Blacklist
 }
 
-func (o *SyncOptions) GetClient() osclient.GroupInterface {
+func (o *SyncOptions) GetClient() usertypedclient.GroupInterface {
 	return o.GroupInterface
 }
 

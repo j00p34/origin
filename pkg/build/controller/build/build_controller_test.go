@@ -32,10 +32,9 @@ import (
 	strategy "github.com/openshift/origin/pkg/build/controller/strategy"
 	buildinformersinternal "github.com/openshift/origin/pkg/build/generated/informers/internalversion"
 	buildinternalclientset "github.com/openshift/origin/pkg/build/generated/internalclientset"
+	buildfake "github.com/openshift/origin/pkg/build/generated/internalclientset/fake"
 	buildinternalfakeclient "github.com/openshift/origin/pkg/build/generated/internalclientset/fake"
 	buildutil "github.com/openshift/origin/pkg/build/util"
-	"github.com/openshift/origin/pkg/client"
-	"github.com/openshift/origin/pkg/client/testclient"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	imageinformersinternal "github.com/openshift/origin/pkg/image/generated/informers/internalversion"
 	imageinternalclientset "github.com/openshift/origin/pkg/image/generated/internalclientset"
@@ -303,8 +302,8 @@ func TestHandleBuild(t *testing.T) {
 		func() {
 			var patchedBuild *buildapi.Build
 			var appliedPatch string
-			openshiftClient := fakeOpenshiftClient(tc.build)
-			openshiftClient.(*testclient.Fake).PrependReactor("patch", "builds",
+			buildClient := fakeBuildClient(tc.build)
+			buildClient.(*buildfake.Clientset).PrependReactor("patch", "builds",
 				func(action clientgotesting.Action) (bool, runtime.Object, error) {
 					if tc.errorOnBuildUpdate {
 						return true, nil, fmt.Errorf("error")
@@ -343,7 +342,7 @@ func TestHandleBuild(t *testing.T) {
 					return true, nil, nil
 				})
 
-			bc := newFakeBuildController(openshiftClient, nil, nil, kubeClient, nil)
+			bc := newFakeBuildController(buildClient, nil, kubeClient, nil)
 			defer bc.stop()
 
 			runPolicy := tc.runPolicy
@@ -402,11 +401,10 @@ func TestHandleBuild(t *testing.T) {
 func TestWorkWithNewBuild(t *testing.T) {
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{}))
 	var patchedBuild *buildapi.Build
-	openshiftClient := fakeOpenshiftClient()
-	openshiftClient.(*testclient.Fake).PrependReactor("patch", "builds", applyBuildPatchReaction(t, build, &patchedBuild))
 	buildClient := fakeBuildClient(build)
+	buildClient.(*buildfake.Clientset).PrependReactor("patch", "builds", applyBuildPatchReaction(t, build, &patchedBuild))
 
-	bc := newFakeBuildController(openshiftClient, buildClient, nil, nil, nil)
+	bc := newFakeBuildController(buildClient, nil, nil, nil)
 	defer bc.stop()
 	bc.enqueueBuild(build)
 
@@ -426,7 +424,7 @@ func TestWorkWithNewBuild(t *testing.T) {
 
 func TestCreateBuildPod(t *testing.T) {
 	kubeClient := fakeKubeExternalClientSet()
-	bc := newFakeBuildController(nil, nil, nil, kubeClient, nil)
+	bc := newFakeBuildController(nil, nil, kubeClient, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{}))
 
@@ -458,7 +456,7 @@ func TestCreateBuildPodWithImageStreamOutput(t *testing.T) {
 	imageStream.Status.DockerImageRepository = "namespace/image-name"
 	imageClient := fakeImageClient(imageStream)
 	imageStreamRef := &kapi.ObjectReference{Name: "isname:latest", Namespace: "isnamespace", Kind: "ImageStreamTag"}
-	bc := newFakeBuildController(nil, nil, imageClient, nil, nil)
+	bc := newFakeBuildController(nil, imageClient, nil, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{To: imageStreamRef}))
 	podName := buildapi.GetBuildPodName(build)
@@ -481,7 +479,7 @@ func TestCreateBuildPodWithImageStreamOutput(t *testing.T) {
 
 func TestCreateBuildPodWithOutputImageStreamMissing(t *testing.T) {
 	imageStreamRef := &kapi.ObjectReference{Name: "isname:latest", Namespace: "isnamespace", Kind: "ImageStreamTag"}
-	bc := newFakeBuildController(nil, nil, nil, nil, nil)
+	bc := newFakeBuildController(nil, nil, nil, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{To: imageStreamRef}))
 
@@ -501,7 +499,7 @@ func TestCreateBuildPodWithOutputImageStreamMissing(t *testing.T) {
 
 func TestCreateBuildPodWithImageStreamMissing(t *testing.T) {
 	imageStreamRef := &kapi.ObjectReference{Name: "isname:latest", Kind: "DockerImage"}
-	bc := newFakeBuildController(nil, nil, nil, nil, nil)
+	bc := newFakeBuildController(nil, nil, nil, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{To: imageStreamRef}))
 	build.Spec.Strategy.DockerStrategy.From = &kapi.ObjectReference{Kind: "ImageStreamTag", Name: "isname:latest"}
@@ -526,7 +524,7 @@ func TestCreateBuildPodWithImageStreamUnresolved(t *testing.T) {
 	imageStream.Status.DockerImageRepository = ""
 	imageClient := fakeImageClient(imageStream)
 	imageStreamRef := &kapi.ObjectReference{Name: "isname:latest", Namespace: "isnamespace", Kind: "ImageStreamTag"}
-	bc := newFakeBuildController(nil, nil, imageClient, nil, nil)
+	bc := newFakeBuildController(nil, imageClient, nil, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{To: imageStreamRef}))
 
@@ -551,7 +549,7 @@ func (*errorStrategy) CreateBuildPod(build *buildapi.Build) (*v1.Pod, error) {
 }
 
 func TestCreateBuildPodWithPodSpecCreationError(t *testing.T) {
-	bc := newFakeBuildController(nil, nil, nil, nil, nil)
+	bc := newFakeBuildController(nil, nil, nil, nil)
 	defer bc.stop()
 	bc.createStrategy = &errorStrategy{}
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{}))
@@ -582,7 +580,7 @@ func TestCreateBuildPodWithNewerExistingPod(t *testing.T) {
 		return true, nil, errors.NewAlreadyExists(schema.GroupResource{Group: "", Resource: "pods"}, existingPod.Name)
 	}
 	kubeClient.(*kexternalclientfake.Clientset).PrependReactor("create", "pods", errorReaction)
-	bc := newFakeBuildController(nil, nil, nil, kubeClient, nil)
+	bc := newFakeBuildController(nil, nil, kubeClient, nil)
 	bc.start()
 	defer bc.stop()
 
@@ -612,7 +610,7 @@ func TestCreateBuildPodWithOlderExistingPod(t *testing.T) {
 		return true, nil, errors.NewAlreadyExists(schema.GroupResource{Group: "", Resource: "pods"}, existingPod.Name)
 	}
 	kubeClient.(*kexternalclientfake.Clientset).PrependReactor("create", "pods", errorReaction)
-	bc := newFakeBuildController(nil, nil, nil, kubeClient, nil)
+	bc := newFakeBuildController(nil, nil, kubeClient, nil)
 	defer bc.stop()
 
 	update, err := bc.createBuildPod(build)
@@ -634,7 +632,7 @@ func TestCreateBuildPodWithPodCreationError(t *testing.T) {
 		return true, nil, fmt.Errorf("error")
 	}
 	kubeClient.(*kexternalclientfake.Clientset).PrependReactor("create", "pods", errorReaction)
-	bc := newFakeBuildController(nil, nil, nil, kubeClient, nil)
+	bc := newFakeBuildController(nil, nil, kubeClient, nil)
 	defer bc.stop()
 	build := dockerStrategy(mockBuild(buildapi.BuildPhaseNew, buildapi.BuildOutput{}))
 
@@ -988,10 +986,6 @@ func pipelineStrategy(build *buildapi.Build) *buildapi.Build {
 	return build
 }
 
-func fakeOpenshiftClient(objects ...runtime.Object) client.Interface {
-	return testclient.NewSimpleFake(objects...)
-}
-
 func fakeImageClient(objects ...runtime.Object) imageinternalclientset.Interface {
 	return imageinternalfakeclient.NewSimpleClientset(objects...)
 }
@@ -1033,10 +1027,7 @@ func (c *fakeBuildController) stop() {
 	close(c.stopChan)
 }
 
-func newFakeBuildController(openshiftClient client.Interface, buildClient buildinternalclientset.Interface, imageClient imageinternalclientset.Interface, kubeExternalClient kexternalclientset.Interface, kubeInternalClient kinternalclientset.Interface) *fakeBuildController {
-	if openshiftClient == nil {
-		openshiftClient = fakeOpenshiftClient()
-	}
+func newFakeBuildController(buildClient buildinternalclientset.Interface, imageClient imageinternalclientset.Interface, kubeExternalClient kexternalclientset.Interface, kubeInternalClient kinternalclientset.Interface) *fakeBuildController {
 	if buildClient == nil {
 		buildClient = fakeBuildClient()
 	}
@@ -1066,7 +1057,7 @@ func newFakeBuildController(openshiftClient client.Interface, buildClient buildi
 		SecretInformer:      kubeExternalInformers.Core().V1().Secrets(),
 		KubeClientExternal:  kubeExternalClient,
 		KubeClientInternal:  kubeInternalClient,
-		OpenshiftClient:     openshiftClient,
+		BuildClientInternal: buildClient,
 		DockerBuildStrategy: &strategy.DockerBuildStrategy{
 			Image: "test/image:latest",
 			Codec: kapi.Codecs.LegacyCodec(buildapi.LegacySchemeGroupVersion),

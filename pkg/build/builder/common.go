@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
@@ -20,12 +21,14 @@ import (
 	"github.com/openshift/source-to-image/pkg/util"
 
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
+	"github.com/openshift/origin/pkg/build/builder/timing"
 	buildutil "github.com/openshift/origin/pkg/build/util"
 	"github.com/openshift/origin/pkg/build/util/dockerfile"
-	"github.com/openshift/origin/pkg/client"
 	"github.com/openshift/origin/pkg/generate/git"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	utilglog "github.com/openshift/origin/pkg/util/glog"
+
+	buildinternalversion "github.com/openshift/origin/pkg/build/generated/internalclientset/typed/build/internalversion"
 )
 
 // glog is a placeholder until the builders pass an output stream down
@@ -114,7 +117,7 @@ func containerName(strategyName, buildName, namespace, containerPurpose string) 
 // postCommitSpec in a new ephemeral Docker container running the given image.
 // It returns an error if the hook cannot be run or returns a non-zero exit
 // code.
-func execPostCommitHook(client DockerClient, postCommitSpec buildapi.BuildPostCommitSpec, image, containerName string) error {
+func execPostCommitHook(ctx context.Context, client DockerClient, postCommitSpec buildapi.BuildPostCommitSpec, image, containerName string) error {
 	command := postCommitSpec.Command
 	args := postCommitSpec.Args
 	script := postCommitSpec.Script
@@ -143,8 +146,9 @@ func execPostCommitHook(client DockerClient, postCommitSpec buildapi.BuildPostCo
 	if err != nil {
 		return fmt.Errorf("read cgroup parent: %v", err)
 	}
+	startTime := metav1.Now()
 
-	return dockerRun(client, docker.CreateContainerOptions{
+	err = dockerRun(client, docker.CreateContainerOptions{
 		Name: containerName,
 		Config: &docker.Config{
 			Image:      image,
@@ -169,6 +173,9 @@ func execPostCommitHook(client DockerClient, postCommitSpec buildapi.BuildPostCo
 		Stdout:       true,
 		Stderr:       true,
 	})
+	timing.RecordNewStep(ctx, buildapi.StagePostCommit, buildapi.StepExecPostCommitHook, startTime, metav1.Now())
+
+	return err
 }
 
 // GetSourceRevision returns a SourceRevision object either from the build (if it already had one)
@@ -195,7 +202,7 @@ func GetSourceRevision(build *buildapi.Build, sourceInfo *git.SourceInfo) *build
 
 // HandleBuildStatusUpdate handles updating the build status
 // retries occur on update conflict and unreachable api server
-func HandleBuildStatusUpdate(build *buildapi.Build, client client.BuildInterface, sourceRev *buildapi.SourceRevision) {
+func HandleBuildStatusUpdate(build *buildapi.Build, client buildinternalversion.BuildResourceInterface, sourceRev *buildapi.SourceRevision) {
 	var latestBuild *buildapi.Build
 	var err error
 
@@ -225,7 +232,7 @@ func HandleBuildStatusUpdate(build *buildapi.Build, client client.BuildInterface
 		latestBuild.Status.Output.To = build.Status.Output.To
 		latestBuild.Status.Stages = buildapi.AppendStageAndStepInfo(latestBuild.Status.Stages, build.Status.Stages)
 
-		_, err = client.UpdateDetails(latestBuild)
+		_, err = client.UpdateDetails(latestBuild.Name, latestBuild)
 
 		switch {
 		case err == nil:

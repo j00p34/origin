@@ -204,10 +204,10 @@ os::cmd::expect_success 'oc project cache'
 IMAGE_PREFIX="${OS_IMAGE_PREFIX:-"openshift/origin"}"
 
 os::log::info "Docker registry start with GCS"
-os::cmd::expect_failure_and_text "docker run -e REGISTRY_STORAGE=\"gcs: {}\" ${IMAGE_PREFIX}-docker-registry:${TAG}" "No bucket parameter provided"
+os::cmd::expect_failure_and_text "docker run -e OPENSHIFT_DEFAULT_REGISTRY=localhost:5000 -e REGISTRY_STORAGE=\"gcs: {}\" ${IMAGE_PREFIX}-docker-registry:${TAG}" "No bucket parameter provided"
 
 os::log::info "Docker registry start with OSS"
-os::cmd::expect_failure_and_text "docker run -e REGISTRY_STORAGE=\"oss: {}\" ${IMAGE_PREFIX}-docker-registry:${TAG}" "No accesskeyid parameter provided"
+os::cmd::expect_failure_and_text "docker run -e OPENSHIFT_DEFAULT_REGISTRY=localhost:5000 -e REGISTRY_STORAGE=\"oss: {}\" ${IMAGE_PREFIX}-docker-registry:${TAG}" "No accesskeyid parameter provided"
 
 os::log::info "Docker pull from istag"
 os::cmd::expect_success "oc import-image --confirm --from=hello-world:latest -n test hello-world:pullthrough"
@@ -469,6 +469,12 @@ frontend_pod=$(oc get pod -l deploymentconfig=frontend --template='{{(index .ite
 os::cmd::expect_success_and_text "oc exec ${frontend_pod} id" '1000'
 os::cmd::expect_success_and_text "oc rsh pod/${frontend_pod} id -u" '1000'
 os::cmd::expect_success_and_text "oc rsh -T ${frontend_pod} id -u" '1000'
+
+os::log::info "Check we can get access to statefulset container via rsh"
+os::cmd::expect_success_and_text "oc create -f test/testdata/statefulset.yaml" 'statefulset "testapp" created'
+os::cmd::try_until_text "oc get pod testapp-0 -o jsonpath='{.status.phase}'" "Running" "$(( 2*TIME_MIN ))"
+os::cmd::expect_success_and_text "oc rsh sts/testapp echo 1" "1"
+os::cmd::expect_success_and_text "oc delete sts/testapp" 'statefulset "testapp" deleted'
 
 # test that rsh inherits the TERM variable by default
 # this must be done as an echo and not an argument to rsh because rsh only sets the TERM if

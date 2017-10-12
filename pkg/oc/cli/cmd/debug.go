@@ -25,17 +25,20 @@ import (
 	"k8s.io/kubernetes/pkg/util/interrupt"
 	"k8s.io/kubernetes/pkg/util/term"
 
-	"github.com/openshift/origin/pkg/client"
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
+	appsclient "github.com/openshift/origin/pkg/apps/generated/internalclientset/typed/apps/internalversion"
 	cmdutil "github.com/openshift/origin/pkg/cmd/util"
 	"github.com/openshift/origin/pkg/cmd/util/clientcmd"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 	generateapp "github.com/openshift/origin/pkg/generate/app"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
+	imageclient "github.com/openshift/origin/pkg/image/generated/internalclientset/typed/image/internalversion"
 )
 
 type DebugOptions struct {
 	Attach kcmd.AttachOptions
-	Client *client.Client
+
+	AppsClient  appsclient.AppsInterface
+	ImageClient imageclient.ImageInterface
 
 	Print         func(pod *kapi.Pod, w io.Writer) error
 	LogsForObject func(object, options runtime.Object, timeout time.Duration) (*restclient.Request, error)
@@ -272,18 +275,44 @@ func (o *DebugOptions) Complete(cmd *cobra.Command, f *clientcmd.Factory, args [
 		}
 	}
 
+	// if a nodeName was specified, ensure node exists
+	if len(o.NodeName) > 0 {
+		r := f.NewBuilder(true).
+			NamespaceParam(cmdNamespace).
+			SingleResourceType().
+			ResourceTypeOrNameArgs(true, []string{"nodes", o.NodeName}...).
+			Flatten().
+			Do()
+
+		_, err := r.Infos()
+		if err != nil {
+			return err
+		}
+	}
+
 	config, err := f.ClientConfig()
 	if err != nil {
 		return err
 	}
 	o.Attach.Config = config
 
-	oc, kc, err := f.Clients()
+	kc, err := f.ClientSet()
 	if err != nil {
 		return err
 	}
 	o.Attach.PodClient = kc.Core()
-	o.Client = oc
+
+	appsClient, err := f.OpenshiftInternalAppsClient()
+	if err != nil {
+		return err
+	}
+	o.AppsClient = appsClient.Apps()
+
+	imageClient, err := f.OpenshiftInternalImageClient()
+	if err != nil {
+		return err
+	}
+	o.ImageClient = imageClient.Image()
 	return nil
 }
 func (o DebugOptions) Validate() error {
@@ -405,7 +434,7 @@ func (o *DebugOptions) getContainerImageViaDeploymentConfig(pod *kapi.Pod, conta
 		return nil, nil // Pod doesn't appear to have been created by a DeploymentConfig
 	}
 
-	dc, err := o.Client.DeploymentConfigs(o.Attach.Pod.Namespace).Get(dcname, metav1.GetOptions{})
+	dc, err := o.AppsClient.DeploymentConfigs(o.Attach.Pod.Namespace).Get(dcname, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +454,7 @@ func (o *DebugOptions) getContainerImageViaDeploymentConfig(pod *kapi.Pod, conta
 				namespace = o.Attach.Pod.Namespace
 			}
 
-			isi, err := o.Client.ImageStreamImages(namespace).Get(isname, ref.ID)
+			isi, err := o.ImageClient.ImageStreamImages(namespace).Get(imageapi.JoinImageStreamImage(isname, ref.ID), metav1.GetOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -459,7 +488,7 @@ func (o *DebugOptions) getContainerImageViaImageStreamImport(container *kapi.Con
 		},
 	}
 
-	isi, err := o.Client.ImageStreams(o.Attach.Pod.Namespace).Import(isi)
+	isi, err := o.ImageClient.ImageStreamImports(o.Attach.Pod.Namespace).Create(isi)
 	if err != nil {
 		return nil, err
 	}

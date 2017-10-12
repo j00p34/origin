@@ -17,7 +17,7 @@
 # this is the version we obsolete up to. The packaging changed for Origin
 # 1.0.6 and OSE 3.1 such that 'openshift' package names were no longer used.
 %global package_refector_version 3.0.2.900
-%global golang_version 1.8.3
+%global golang_version 1.8.1
 # %commit and %os_git_vars are intended to be set by tito custom builders provided
 # in the .tito/lib directory. The values in this spec file will not be kept up to date.
 %{!?commit:
@@ -121,6 +121,7 @@ Requires:       socat
 Requires:       nfs-utils
 Requires:       ethtool
 Requires:       device-mapper-persistent-data >= 0.6.2
+Requires:       conntrack-tools
 Requires(post):   systemd
 Requires(preun):  systemd
 Requires(postun): systemd
@@ -193,6 +194,11 @@ Summary:        %{product_name} Service Catalog
 %description service-catalog
 %{summary}
 
+%package template-service-broker
+Summary: Template Service Broker
+%description template-service-broker
+%{summary}
+
 %package cluster-capacity
 Summary:        %{product_name} Cluster Capacity Analysis Tool
 
@@ -263,7 +269,7 @@ PLATFORM="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
 install -d %{buildroot}%{_bindir}
 
 # Install linux components
-for bin in oc openshift dockerregistry kubefed
+for bin in oc openshift dockerregistry kubefed template-service-broker
 do
   echo "+++ INSTALLING ${bin}"
   install -p -m 755 _output/local/bin/${PLATFORM}/${bin} %{buildroot}%{_bindir}/${bin}
@@ -615,6 +621,9 @@ fi
 %files cluster-capacity
 %{_bindir}/hypercc
 %{_bindir}/cluster-capacity
+
+%files template-service-broker
+%{_bindir}/template-service-broker
 
 
 %pretrans docker-excluder

@@ -24,11 +24,10 @@ import (
 	kapi "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
 
+	deployapi "github.com/openshift/origin/pkg/apps/apis/apps"
 	buildapi "github.com/openshift/origin/pkg/build/apis/build"
 	buildgenerator "github.com/openshift/origin/pkg/build/generator"
-	buildutil "github.com/openshift/origin/pkg/build/util"
 	"github.com/openshift/origin/pkg/cmd/server/bootstrappolicy"
-	deployapi "github.com/openshift/origin/pkg/deploy/apis/apps"
 	imageapi "github.com/openshift/origin/pkg/image/apis/image"
 	triggerapi "github.com/openshift/origin/pkg/image/apis/image/v1/trigger"
 	imageinternalversion "github.com/openshift/origin/pkg/image/generated/listers/image/internalversion"
@@ -690,8 +689,8 @@ func scenario_1_deploymentConfig_imageSource_cacheEntry() *trigger.CacheEntry {
 		Key:       "deploymentconfigs/test/deploy1",
 		Namespace: "test",
 		Triggers: []triggerapi.ObjectFieldTrigger{
-			{From: triggerapi.ObjectReference{Kind: "ImageStreamTag", Name: "stream:1"}, FieldPath: "spec.template.spec.containers[@name='first'].image"},
-			{From: triggerapi.ObjectReference{Kind: "ImageStreamTag", Name: "stream:1"}, FieldPath: "spec.template.spec.containers[@name='second'].image"},
+			{From: triggerapi.ObjectReference{Kind: "ImageStreamTag", Name: "stream:1"}, FieldPath: "spec.template.spec.containers[@name==\"first\"].image"},
+			{From: triggerapi.ObjectReference{Kind: "ImageStreamTag", Name: "stream:1"}, FieldPath: "spec.template.spec.containers[@name==\"second\"].image"},
 		},
 	}
 }
@@ -950,7 +949,7 @@ func updateBuildConfigImages(bc *buildapi.BuildConfig, tagRetriever trigger.TagR
 		if p.From != nil {
 			from = p.From
 		} else {
-			from = buildutil.GetInputReference(bc.Spec.Strategy)
+			from = buildapi.GetInputReference(bc.Spec.Strategy)
 		}
 		namespace := from.Namespace
 		if len(namespace) == 0 {

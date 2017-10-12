@@ -72,7 +72,7 @@ func TestKubeletDefaults(t *testing.T) {
 			EnableCustomMetrics:            false,
 			EnableDebuggingHandlers:        true,
 			EnableServer:                   true,
-			EvictionHard:                   "memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%",
+			EvictionHard:                   "memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%,imagefs.available<15%",
 			FileCheckFrequency:             metav1.Duration{Duration: 20 * time.Second}, // overridden
 			HealthzBindAddress:             "127.0.0.1",                                 // disabled
 			HealthzPort:                    10248,                                       // disabled
@@ -136,6 +136,10 @@ func TestKubeletDefaults(t *testing.T) {
 
 			EnforceNodeAllocatable: []string{"pods"},
 		},
+	}
+
+	if goruntime.GOOS == "darwin" {
+		expectedDefaults.KubeletConfiguration.RemoteRuntimeEndpoint = ""
 	}
 
 	if !reflect.DeepEqual(defaults, expectedDefaults) {
